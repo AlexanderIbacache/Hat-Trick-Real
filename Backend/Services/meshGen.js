@@ -36,7 +36,7 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
 
     // A task can be marked successful a few seconds before its CDN artifact is
     // available. Retry the download independently; never create a second task.
-    const modelResponse = await tripoFetch(modelUrl, {}, { retries: 4, retryStatuses: [404, 429, 500, 502, 503, 504] });
+    const modelResponse = await tripoFetch(modelUrl, {}, { retries: 8, timeoutMs: 60_000, retryStatuses: [404, 408, 429, 500, 502, 503, 504] });
     if (!modelResponse.ok) throw new Error(`Could not download Tripo's generated GLB (${modelResponse.status}).`);
     const glbBuffer = Buffer.from(await modelResponse.arrayBuffer());
     if (glbBuffer.toString("ascii", 0, 4) !== "glTF") throw new Error("Tripo returned a model that is not a GLB file.");
@@ -134,8 +134,11 @@ async function createTripoModelTask(fileTokens, apiKey) {
 }
 
 async function waitForTripoTask(taskId, apiKey) {
-  const interval = Math.max(1000, Number(process.env.TRIPO_POLL_INTERVAL_MS || 2500));
-  const timeout = Math.max(interval, Number(process.env.TRIPO_TIMEOUT_MS || 480000));
+  // Model reconstruction can take several minutes during busy periods. Keep
+  // the same task alive and poll it at a modest cadence instead of failing the
+  // browser request early or submitting a second token-consuming task.
+  const interval = Math.max(1000, Number(process.env.TRIPO_POLL_INTERVAL_MS || 5000));
+  const timeout = Math.max(interval, Number(process.env.TRIPO_TIMEOUT_MS || 900000));
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     let payload;
@@ -154,6 +157,7 @@ async function waitForTripoTask(taskId, apiKey) {
     if (task?.status === "failed" || task?.status === "cancelled") {
       throw new Error(`Tripo generation ${task.status}: ${task.error_message || "no error details returned"}`);
     }
+    console.info(`Tripo task ${taskId}: ${task?.status || "queued"} (${task?.progress ?? 0}%).`);
     await new Promise((resolve) => setTimeout(resolve, interval));
   }
   throw new Error(`Tripo generation timed out after ${Math.round(timeout / 1000)} seconds (task ${taskId}).`);

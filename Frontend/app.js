@@ -518,6 +518,13 @@ $("btn-mesh").addEventListener("click", async () => {
     setStatus("mesh-status", mesh.fallback ? "Mesh fallback ready; place it with the real footprint." : "Textured PBR 3D model ready. Placement will use its true GLB bounds + OSM footprint.", "ok");
     unlock("step-place");
     activate(5);
+    // The placement inputs are already known, so render the completed model
+    // immediately in the map below instead of making the user click twice.
+    if (mapState.map && mapState.modelClass) {
+      $("btn-place").click();
+    } else {
+      setStatus("place-status", "Model is ready. The map is still loading; use Place on map when it is available.", "busy");
+    }
   } catch (err) { setStatus("mesh-status", err.message, "err"); }
 });
 
