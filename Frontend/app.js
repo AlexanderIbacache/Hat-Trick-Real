@@ -69,6 +69,26 @@ function api(path, body) {
   });
 }
 
+async function getApiJson(path) {
+  const baseUrl = await getApiBaseUrl();
+  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+
+async function createMeshAndWait(body) {
+  const queued = await api("/api/mesh", body);
+  if (!queued.jobId) return queued;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const result = await getApiJson(`/api/mesh/${encodeURIComponent(queued.jobId)}`);
+    if (result.status === "completed") return result.mesh;
+    if (result.status === "failed") throw new Error(result.error || "Mesh generation failed.");
+    setStatus("mesh-status", result.status === "queued" ? "Tripo job queued…" : "Tripo is building the textured model…", "busy");
+  }
+}
+
 function setStatus(id, text, kind = "") { const el = $(id); el.textContent = text; el.className = `status ${kind}`; }
 function unlock(id) { const el = $(id); el.dataset.locked = "false"; el.classList.remove("active-step"); }
 function activate(stepNumber) {
@@ -504,7 +524,7 @@ $("btn-mesh").addEventListener("click", async () => {
       return { base64: imageBase64.base64, mimeType: imageBase64.mimeType };
     }));
     const [mesh, footprint] = await Promise.all([
-      api("/api/mesh", {
+      createMeshAndWait({
         base64: generatedReferences[0].base64,
         mimeType: generatedReferences[0].mimeType,
         images: generatedReferences,
@@ -513,6 +533,9 @@ $("btn-mesh").addEventListener("click", async () => {
     ]);
     if (!mesh || !footprint) throw new Error("Mesh or building-footprint data was not returned.");
     state.mesh = mesh; state.footprint = footprint;
+    const preview = $("mesh-preview");
+    preview.src = `${API}${mesh.glbUrl}`;
+    preview.hidden = false;
     $("mesh-readout").textContent = mesh.fallback ? "Local fallback" : "Tripo textured PBR";
     $("footprint-readout").textContent = `${footprint.widthMeters}×${footprint.lengthMeters} m`;
     setStatus("mesh-status", mesh.fallback ? "Mesh fallback ready; place it with the real footprint." : "Textured PBR 3D model ready. Placement will use its true GLB bounds + OSM footprint.", "ok");

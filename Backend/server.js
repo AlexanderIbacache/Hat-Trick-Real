@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import path from "node:path";
+import crypto from "node:crypto";
 import { GENERATED_DIR } from "./Services/generatedDir.js";
 
 import { geocodeAddress } from "./Services/geocode.js";
@@ -9,6 +10,7 @@ import { getBuildingFootprint } from "./Services/footprint.js";
 import { imageToMesh, readGlbDimensions } from "./Services/meshGen.js";
 
 const app = express();
+const meshJobs = new Map();
 
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "35mb" }));
@@ -67,8 +69,23 @@ app.post("/api/mesh", async (req, res) => {
   try {
     const { base64, mimeType, images } = req.body || {};
     if (!base64 && !images?.length) return res.status(400).json({ error: "At least one source image is required." });
-    res.json(await imageToMesh({ base64, mimeType, images }));
+    const jobId = crypto.randomUUID();
+    const job = { status: "queued", createdAt: Date.now() };
+    meshJobs.set(jobId, job);
+    // Tripo can take several minutes. Keep that work off the HTTP request so
+    // hosted proxies cannot terminate it before the model is downloaded.
+    Promise.resolve().then(() => imageToMesh({ base64, mimeType, images }))
+      .then((mesh) => Object.assign(job, { status: "completed", mesh, completedAt: Date.now() }))
+      .catch((error) => Object.assign(job, { status: "failed", error: error?.message || "Mesh generation failed.", completedAt: Date.now() }));
+    res.status(202).json({ jobId, status: job.status });
   } catch (err) { sendError(res, err); }
+});
+
+app.get("/api/mesh/:jobId", (req, res) => {
+  const job = meshJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Mesh job was not found or has expired." });
+  res.json({ status: job.status, ...(job.status === "completed" ? { mesh: job.mesh } : {}), ...(job.status === "failed" ? { error: job.error } : {}) });
+  if (job.completedAt && Date.now() - job.completedAt > 30 * 60 * 1000) meshJobs.delete(req.params.jobId);
 });
 
 app.post("/api/analyze-mesh", async (req, res) => {

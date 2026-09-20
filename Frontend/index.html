@@ -71,6 +71,7 @@
       <section class="step" id="step-mesh" data-locked="true">
         <div class="step-heading"><div class="step-index">04</div><div><h2>Make the 3D model</h2><p>Tripo reconstruction + textured PBR material + footprint fit.</p></div></div>
         <div class="data-pair"><div><span>AI route</span><strong id="mesh-readout">Not generated</strong></div><div><span>Footprint</span><strong id="footprint-readout">Waiting</strong></div></div>
+        <model-viewer id="mesh-preview" class="mesh-preview" camera-controls auto-rotate shadow-intensity="1" environment-image="neutral" alt="Generated textured 3D model" hidden></model-viewer>
         <button class="accent-btn full" id="btn-mesh">Generate textured 3D model</button>
         <div class="status" id="mesh-status"></div>
       </section>
@@ -114,6 +115,7 @@
   </main>
 
   <script src="https://js.puter.com/v2/"></script>
+  <script type="module" src="https://unpkg.com/@google/model-viewer@4.0.0/dist/model-viewer.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
