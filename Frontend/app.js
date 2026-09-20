@@ -593,7 +593,8 @@ $("btn-place").addEventListener("click", async () => {
   }
   setStatus("place-status", "Fitting the mesh to the real building footprint…", "busy");
   try {
-    if (state.model) mapState.map.removeChild(state.model);
+    const isFirstPlacement = !state.model;
+    if (state.model?.parentNode === mapState.map) mapState.map.removeChild(state.model);
     const fp = state.footprint;
     const dims = state.mesh.meshDimensions || { width:1, height:1, depth:1 };
 
@@ -618,17 +619,20 @@ $("btn-place").addEventListener("click", async () => {
     $("model-tilt").value = "0";
     $("model-roll").value = "0";
     $("model-scale").value = "1";
+    const modelUrl = new URL(state.mesh.glbUrl, `${API}/`).href;
     const model = new mapState.modelClass({
-      src: `${API}${state.mesh.glbUrl}`,
+      src: modelUrl,
       position: { lat:Number(center.lat), lng:Number(center.lng), altitude:0 },
       orientation: { heading:normalizeHeading(heading), tilt:0, roll:0 },
       scale: { x:scaleX, y:scaleY, z:scaleZ },
-      altitudeMode: "CLAMP_TO_GROUND",
+      altitudeMode: "RELATIVE_TO_GROUND",
     });
+    model.addEventListener("load", () => setStatus("place-status", "3D model loaded on the map.", "ok"), { once: true });
+    model.addEventListener("error", () => setStatus("place-status", `Google Maps could not load the GLB: ${modelUrl}`, "err"), { once: true });
     mapState.map.appendChild(model);
     state.model = model; state.modelBaseScale = { x:scaleX, y:scaleY, z:scaleZ }; state.modelVisible = true;
 
-    flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
+    if (isFirstPlacement) flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
     $("btn-toggle").disabled = false; $("btn-toggle").textContent = "Hide model";
     $("place-position").textContent = `${Number(center.lat).toFixed(6)}, ${Number(center.lng).toFixed(6)}`;
     $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading`;
@@ -655,7 +659,6 @@ $("btn-update-model").addEventListener("click", () => {
   state.model.position = { lat, lng, altitude };
   state.model.orientation = { heading: normalizeHeading(heading), tilt, roll };
   state.model.scale = { x:Number(currentScale.x) * size, y:Number(currentScale.y) * size, z:Number(currentScale.z) * size };
-  flyTo(lat, lng, { altitude:Math.max(100, altitude + 100), range:260, tilt:68, heading:normalizeHeading(heading) });
   $("place-position").textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}, Z ${altitude.toFixed(1)} m`;
   $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading · ${tilt.toFixed(1)}° tilt · ${roll.toFixed(1)}° roll`;
   $("place-scale").textContent = `${(Number(currentScale.x) * size).toFixed(2)} × ${(Number(currentScale.y) * size).toFixed(2)} × ${(Number(currentScale.z) * size).toFixed(2)}`;
