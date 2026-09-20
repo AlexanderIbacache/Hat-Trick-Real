@@ -13,16 +13,26 @@ export async function getBuildingFootprint(lat, lng) {
     out tags geom;
   `;
 
-  const res = await fetch(OVERPASS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "text/plain",
-      "User-Agent": "AddressTo3D-Hackathon-Demo/1.0 (local prototype)",
-    },
-    body: query,
-  });
+  let res;
+  try {
+    res = await fetch(OVERPASS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "User-Agent": "AddressTo3D-Hackathon-Demo/1.0 (local prototype)",
+      },
+      body: query,
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    console.warn("Overpass footprint lookup failed; using estimated footprint:", error?.message || error);
+    return estimatedFootprint(lat, lng, "fallback estimate (Overpass unavailable)");
+  }
 
-  if (!res.ok) throw new Error(`Overpass API request failed: ${res.status}`);
+  if (!res.ok) {
+    console.warn(`Overpass footprint lookup returned ${res.status}; using estimated footprint.`);
+    return estimatedFootprint(lat, lng, `fallback estimate (Overpass ${res.status})`);
+  }
 
   const data = await res.json();
   const ways = data.elements?.filter((el) => el.type === "way" && el.geometry?.length >= 3) ?? [];
@@ -74,7 +84,7 @@ export async function getBuildingFootprint(lat, lng) {
   };
 }
 
-function estimatedFootprint(lat, lng) {
+function estimatedFootprint(lat, lng, source = "fallback estimate") {
   return {
     widthMeters: FALLBACK_SIZE_METERS,
     lengthMeters: FALLBACK_SIZE_METERS,
@@ -85,7 +95,7 @@ function estimatedFootprint(lat, lng) {
     center: { lat, lng },
     distanceFromGeocodeMeters: null,
     estimated: true,
-    source: "fallback estimate",
+    source,
   };
 }
 
