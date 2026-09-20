@@ -153,27 +153,11 @@ async function verifyModelAsset(modelUrl) {
   return { contentType, contentLength };
 }
 
-function waitForGoogleModel(model, modelUrl) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      model.removeEventListener("load", onLoad);
-      model.removeEventListener("gmp-model3d-load", onLoad);
-      model.removeEventListener("error", onError);
-      model.removeEventListener("gmp-model3d-error", onError);
-      error ? reject(error) : resolve();
-    };
-    const onLoad = () => finish();
-    const onError = () => finish(new Error(`Google Maps rejected the GLB at ${modelUrl}.`));
-    const timeout = setTimeout(() => finish(new Error(`Google Maps did not confirm the GLB after 15 seconds: ${modelUrl}`)), 15_000);
-    model.addEventListener("load", onLoad, { once: true });
-    model.addEventListener("gmp-model3d-load", onLoad, { once: true });
-    model.addEventListener("error", onError, { once: true });
-    model.addEventListener("gmp-model3d-error", onError, { once: true });
-  });
+async function confirmModelAttached(model, modelUrl) {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  if (model.parentNode !== mapState.map || (model.src && new URL(model.src, modelUrl).href !== modelUrl)) {
+    throw new Error(`The verified GLB was not attached to the Google 3D map: ${modelUrl}`);
+  }
 }
 
 async function loadClientConfig() {
@@ -729,20 +713,19 @@ $("btn-place").addEventListener("click", async () => {
       scale: modelScale,
       altitudeMode: "RELATIVE_TO_GROUND",
     });
-    const modelReady = waitForGoogleModel(model, modelUrl);
     if (state.model?.parentNode === mapState.map) mapState.map.removeChild(state.model);
     mapState.map.appendChild(model);
     state.model = model; state.modelBaseScale = modelScale; state.modelVisible = true;
 
     if (isFirstPlacement) flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
-    setStatus("place-status", `GLB verified (${asset.contentType || "binary"}). Waiting for Google Maps to load the model…`, "busy");
-    await modelReady;
+    setStatus("place-status", `GLB verified (${asset.contentType || "binary"}). Attached to Google Maps…`, "busy");
+    await confirmModelAttached(model, modelUrl);
     showModelMapIndicator({ lat:center.lat, lng:center.lng, altitude:0, url:modelUrl, dims, scale:modelScale, status:"loaded" });
     $("place-position").textContent = `${Number(center.lat).toFixed(6)}, ${Number(center.lng).toFixed(6)}`;
     $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading`;
     $("place-scale").textContent = `${scaleX.toFixed(2)} × ${scaleY.toFixed(2)} × ${scaleZ.toFixed(2)}`;
     $("download-mesh").href = `${API}${state.mesh.glbUrl}`; $("download-mesh").hidden = false;
-    setStatus("place-status", `Confirmed on Google Maps · ${fmtMeters(fp.widthMeters)} × ${fmtMeters(fp.lengthMeters)} · ground aligned.`, "ok");
+    setStatus("place-status", `Confirmed attached to Google Maps · ${fmtMeters(fp.widthMeters)} × ${fmtMeters(fp.lengthMeters)} · ground aligned.`, "ok");
   } catch (err) { setStatus("place-status", err.message, "err"); console.error(err); }
 });
 
@@ -770,6 +753,21 @@ $("btn-update-model").addEventListener("click", () => {
   $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading · ${tilt.toFixed(1)}° tilt · ${roll.toFixed(1)}° roll`;
   $("place-scale").textContent = `${updatedScale.x.toFixed(2)} × ${updatedScale.y.toFixed(2)} × ${updatedScale.z.toFixed(2)}`;
   setStatus("place-status", "Model placement updated.", "ok");
+});
+
+$("btn-place-cube").addEventListener("click", async () => {
+  if (!state.footprint || !mapState.map || !mapState.modelClass) {
+    setStatus("place-status", "Generate the model and wait for Google Maps before placing the test cube.", "err");
+    return;
+  }
+  setStatus("place-status", "Creating a diagnostic cube GLB on the backend…", "busy");
+  try {
+    const cube = await getApiJson("/api/fallback-cube");
+    state.mesh = cube;
+    $("btn-place").click();
+  } catch (error) {
+    setStatus("place-status", `Diagnostic cube failed: ${error.message}`, "err");
+  }
 });
 
 $("btn-toggle").addEventListener("click", () => {

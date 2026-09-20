@@ -351,7 +351,7 @@ export async function readGlbDimensions(filePath) {
   };
 }
 
-function makeFallbackMesh() {
+export function makeFallbackMesh() {
   const filename = `mesh-${crypto.randomUUID()}.glb`;
   const filePath = path.join(GENERATED_DIR, filename);
   const glb = makeBoxGlb();
