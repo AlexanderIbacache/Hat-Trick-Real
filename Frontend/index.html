@@ -83,6 +83,15 @@
           <div><span>Orientation</span><strong id="place-orientation">—</strong></div>
           <div><span>Scale</span><strong id="place-scale">—</strong></div>
         </div>
+        <div class="placement-controls" aria-label="3D model placement adjustments">
+          <label for="model-lat">Location</label>
+          <div class="control-grid three"><input id="model-lat" type="number" step="0.000001" placeholder="Latitude" aria-label="Model latitude"><input id="model-lng" type="number" step="0.000001" placeholder="Longitude" aria-label="Model longitude"><input id="model-altitude" type="number" step="0.5" placeholder="Z altitude (m)" aria-label="Model Z altitude in meters"></div>
+          <label for="model-heading">Rotation</label>
+          <div class="control-grid three"><input id="model-heading" type="number" step="1" placeholder="Heading" aria-label="Model heading"><input id="model-tilt" type="number" step="1" min="-180" max="180" placeholder="Tilt" aria-label="Model tilt"><input id="model-roll" type="number" step="1" min="-180" max="180" placeholder="Roll" aria-label="Model roll"></div>
+          <label for="model-scale">Size</label>
+          <div class="control-grid one"><input id="model-scale" type="number" step="0.01" min="0.01" placeholder="Uniform size multiplier" aria-label="Uniform model size multiplier"></div>
+          <button class="ghost-btn full" id="btn-update-model" type="button">Update model placement</button>
+        </div>
         <div class="button-row">
           <button class="accent-btn" id="btn-place">Place on map</button>
           <button class="ghost-btn" id="btn-toggle" disabled>Show model</button>
@@ -104,6 +113,10 @@
       <div class="map-chrome map-controls glass-chip" aria-label="Map controls">
         <button id="btn-zoom-in" aria-label="Zoom in">+</button>
         <button id="btn-zoom-out" aria-label="Zoom out">−</button>
+      </div>
+      <div class="map-chrome camera-controls glass-chip" aria-label="Camera controls">
+        <button id="btn-pan-north" aria-label="Move camera north">↑</button><button id="btn-pan-west" aria-label="Move camera west">←</button><button id="btn-pan-east" aria-label="Move camera east">→</button><button id="btn-pan-south" aria-label="Move camera south">↓</button>
+        <button id="btn-tilt-down" aria-label="Lower camera tilt">⌄</button><button id="btn-tilt-up" aria-label="Raise camera tilt">⌃</button><button id="btn-camera-reset" aria-label="Reset camera view">○</button>
       </div>
       <div class="map-chrome bottom-right glass-chip">
         <span>Map: Google 3D Maps</span><span class="separator">·</span><span id="map-coordinates">37.2296, -80.4139</span>

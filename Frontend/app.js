@@ -38,6 +38,7 @@ const state = {
   footprint: null,
   mesh: null,
   model: null,
+  modelBaseScale: null,
   modelVisible: false,
 };
 
@@ -278,6 +279,29 @@ function changeMapZoom(multiplier) {
 }
 $("btn-zoom-in").addEventListener("click", () => changeMapZoom(0.72));
 $("btn-zoom-out").addEventListener("click", () => changeMapZoom(1.38));
+function moveCamera(direction) {
+  if (!mapState.map) return;
+  const distance = Math.max(8, Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * 0.12);
+  const center = mapState.map.center || CFG.DEFAULT_VIEW;
+  const lat = Number(typeof center.lat === "function" ? center.lat() : center.lat);
+  const lng = Number(typeof center.lng === "function" ? center.lng() : center.lng);
+  const deltaLat = direction === "north" ? distance : direction === "south" ? -distance : 0;
+  const deltaLng = direction === "east" ? distance : direction === "west" ? -distance : 0;
+  const nextLat = lat + deltaLat / 111320;
+  const nextLng = lng + deltaLng / (111320 * Math.max(Math.cos(lat * Math.PI / 180), 0.01));
+  mapState.map.center = { lat: nextLat, lng: nextLng, altitude: Number(center.altitude || 0) };
+  updateMapChrome(nextLat, nextLng);
+}
+function changeCameraTilt(amount) {
+  if (mapState.map) mapState.map.tilt = Math.min(85, Math.max(20, Number(mapState.map.tilt || CFG.DEFAULT_VIEW.tilt) + amount));
+}
+$("btn-pan-north").addEventListener("click", () => moveCamera("north"));
+$("btn-pan-south").addEventListener("click", () => moveCamera("south"));
+$("btn-pan-east").addEventListener("click", () => moveCamera("east"));
+$("btn-pan-west").addEventListener("click", () => moveCamera("west"));
+$("btn-tilt-up").addEventListener("click", () => changeCameraTilt(-5));
+$("btn-tilt-down").addEventListener("click", () => changeCameraTilt(5));
+$("btn-camera-reset").addEventListener("click", () => flyTo(Number(state.lat || CFG.DEFAULT_VIEW.lat), Number(state.lng || CFG.DEFAULT_VIEW.lng), CFG.DEFAULT_VIEW));
 function replaceAddressMarker(lat, lng) {
   if (!mapState.map || !mapState.markerClass) return;
   if (mapState.marker) mapState.map.removeChild(mapState.marker);
@@ -587,6 +611,13 @@ $("btn-place").addEventListener("click", async () => {
     scaleY = Number(fp.heightMeters || 10) / Number(dims.height || 1);
 
     const center = fp.center || { lat:state.lat, lng:state.lng };
+    $("model-lat").value = Number(center.lat).toFixed(6);
+    $("model-lng").value = Number(center.lng).toFixed(6);
+    $("model-altitude").value = "0";
+    $("model-heading").value = normalizeHeading(heading).toFixed(1);
+    $("model-tilt").value = "0";
+    $("model-roll").value = "0";
+    $("model-scale").value = "1";
     const model = new mapState.modelClass({
       src: `${API}${state.mesh.glbUrl}`,
       position: { lat:Number(center.lat), lng:Number(center.lng), altitude:0 },
@@ -595,9 +626,9 @@ $("btn-place").addEventListener("click", async () => {
       altitudeMode: "CLAMP_TO_GROUND",
     });
     mapState.map.appendChild(model);
-    state.model = model; state.modelVisible = true;
+    state.model = model; state.modelBaseScale = { x:scaleX, y:scaleY, z:scaleZ }; state.modelVisible = true;
 
-    flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:74.5, heading:normalizeHeading(heading) });
+    flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
     $("btn-toggle").disabled = false; $("btn-toggle").textContent = "Hide model";
     $("place-position").textContent = `${Number(center.lat).toFixed(6)}, ${Number(center.lng).toFixed(6)}`;
     $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading`;
@@ -605,6 +636,30 @@ $("btn-place").addEventListener("click", async () => {
     $("download-mesh").href = `${API}${state.mesh.glbUrl}`; $("download-mesh").hidden = false;
     setStatus("place-status", `Placed at footprint centroid · ${fmtMeters(fp.widthMeters)} × ${fmtMeters(fp.lengthMeters)} · ground aligned.`, "ok");
   } catch (err) { setStatus("place-status", err.message, "err"); console.error(err); }
+});
+
+$("btn-update-model").addEventListener("click", () => {
+  if (!state.model) return;
+  const lat = Number($("model-lat").value);
+  const lng = Number($("model-lng").value);
+  const altitude = Number($("model-altitude").value);
+  const heading = Number($("model-heading").value);
+  const tilt = Number($("model-tilt").value);
+  const roll = Number($("model-roll").value);
+  const size = Number($("model-scale").value);
+  if (![lat, lng, altitude, heading, tilt, roll, size].every(Number.isFinite) || size <= 0) {
+    setStatus("place-status", "Enter valid placement values. Size must be greater than zero.", "err");
+    return;
+  }
+  const currentScale = state.modelBaseScale || state.model.scale || { x:1, y:1, z:1 };
+  state.model.position = { lat, lng, altitude };
+  state.model.orientation = { heading: normalizeHeading(heading), tilt, roll };
+  state.model.scale = { x:Number(currentScale.x) * size, y:Number(currentScale.y) * size, z:Number(currentScale.z) * size };
+  flyTo(lat, lng, { altitude:Math.max(100, altitude + 100), range:260, tilt:68, heading:normalizeHeading(heading) });
+  $("place-position").textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}, Z ${altitude.toFixed(1)} m`;
+  $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading · ${tilt.toFixed(1)}° tilt · ${roll.toFixed(1)}° roll`;
+  $("place-scale").textContent = `${(Number(currentScale.x) * size).toFixed(2)} × ${(Number(currentScale.y) * size).toFixed(2)} × ${(Number(currentScale.z) * size).toFixed(2)}`;
+  setStatus("place-status", "Model placement updated.", "ok");
 });
 
 $("btn-toggle").addEventListener("click", () => {
