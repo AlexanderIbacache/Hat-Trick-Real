@@ -44,6 +44,33 @@ const state = {
 
 const mapState = { map: null, marker: null, modelClass: null, markerClass: null, drag: null };
 
+function getMapCenterLatLng() {
+  const center = mapState.map?.center || CFG.DEFAULT_VIEW;
+  return {
+    lat: Number(typeof center.lat === "function" ? center.lat() : center.lat),
+    lng: Number(typeof center.lng === "function" ? center.lng() : center.lng),
+  };
+}
+
+function projectLatLngToScreen(lat, lng, surface) {
+  const center = getMapCenterLatLng();
+  const metersPerPixel = (Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * 1.25) / Math.max(surface.clientHeight, 1);
+  const dxMeters = (lng - center.lng) * 111320 * Math.max(Math.cos(center.lat * Math.PI / 180), 0.01);
+  const dyMeters = (lat - center.lat) * 111320;
+  return {
+    x: surface.clientWidth / 2 + (dxMeters / metersPerPixel),
+    y: surface.clientHeight / 2 - (dyMeters / metersPerPixel),
+  };
+}
+
+function getModelScreenPoint(surface) {
+  if (!state.model || !mapState.map) return null;
+  const modelPosition = state.model.position || {};
+  const lat = Number(modelPosition.lat ?? getMapCenterLatLng().lat);
+  const lng = Number(modelPosition.lng ?? getMapCenterLatLng().lng);
+  return projectLatLngToScreen(lat, lng, surface);
+}
+
 async function getApiBaseUrl() {
   const resolved = await resolveBackendUrl();
   if (resolved && resolved !== API) {
@@ -144,12 +171,23 @@ async function initGoogle3D() {
       heading: CFG.DEFAULT_VIEW.heading,
       mode: "HYBRID",
       defaultUIHidden: false,
-      // The page-level controller below provides consistent mouse and trackpad
-      // navigation across versions of the beta 3D Maps component.
+      // We manage the map navigation ourselves so pan, tilt, rotation, and zoom
+      // are consistent across browsers and remain predictable for model placement.
       gestureHandling: GestureHandling.NONE,
     });
-    $("map3d").appendChild(mapState.map);
-    enableMapPointerNavigation();
+    const host = $("map3d");
+    host.appendChild(mapState.map);
+    const interactionLayer = document.createElement("div");
+    interactionLayer.id = "map-interaction-layer";
+    interactionLayer.setAttribute("aria-hidden", "true");
+    interactionLayer.style.position = "absolute";
+    interactionLayer.style.inset = "0";
+    interactionLayer.style.zIndex = "5";
+    interactionLayer.style.cursor = "grab";
+    interactionLayer.style.touchAction = "none";
+    interactionLayer.style.background = "transparent";
+    host.appendChild(interactionLayer);
+    enableMapPointerNavigation(interactionLayer);
     $("map-fallback").hidden = true;
     updateMapChrome(CFG.DEFAULT_VIEW.lat, CFG.DEFAULT_VIEW.lng);
   } catch (err) {
@@ -206,8 +244,8 @@ function flyTo(lat, lng, options = {}) {
   updateMapChrome(lat, lng);
 }
 
-function enableMapPointerNavigation() {
-  const surface = $("map3d");
+function enableMapPointerNavigation(handle = $("map3d")) {
+  const surface = handle;
   if (surface.dataset.pointerNavigationEnabled) return;
   surface.dataset.pointerNavigationEnabled = "true";
 
@@ -215,7 +253,25 @@ function enableMapPointerNavigation() {
     if (!mapState.map || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     event.stopPropagation();
-    mapState.drag = { button: event.button, x: event.clientX, y: event.clientY };
+
+    const rect = surface.getBoundingClientRect();
+    const modelPoint = getModelScreenPoint(surface);
+    const nearModel = !!(
+      state.model &&
+      modelPoint &&
+      Math.hypot(
+        event.clientX - (rect.left + modelPoint.x),
+        event.clientY - (rect.top + modelPoint.y)
+      ) < 80
+    );
+
+    mapState.drag = {
+      button: event.button,
+      x: event.clientX,
+      y: event.clientY,
+      mode: event.button === 2 ? "rotate" : nearModel ? "model" : "map",
+      modelStart: state.model ? { lat: Number(state.model.position?.lat), lng: Number(state.model.position?.lng) } : null,
+    };
     surface.setPointerCapture(event.pointerId);
   }, true);
 
@@ -229,12 +285,27 @@ function enableMapPointerNavigation() {
     drag.x = event.clientX;
     drag.y = event.clientY;
 
-    if (drag.button === 2) {
+    if (drag.mode === "rotate") {
       mapState.map.heading = normalizeHeading(Number(mapState.map.heading || 0) + dx * 0.35);
       mapState.map.tilt = Math.min(85, Math.max(0, Number(mapState.map.tilt || 0) - dy * 0.2));
-    } else {
-      panMapByPixels(dx, dy, surface);
+      return;
     }
+
+    if (drag.mode === "model" && state.model && drag.modelStart) {
+      const center = getMapCenterLatLng();
+      const metersPerPixel = (Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * 1.25) / Math.max(surface.clientHeight, 1);
+      const latDelta = (-dy * metersPerPixel) / 111320;
+      const lngDelta = (dx * metersPerPixel) / (111320 * Math.max(Math.cos(center.lat * Math.PI / 180), 0.01));
+      const nextLat = drag.modelStart.lat + latDelta;
+      const nextLng = drag.modelStart.lng + lngDelta;
+      state.model.position = { lat: nextLat, lng: nextLng, altitude: Number(state.model.position?.altitude || 0) };
+      if ($("model-lat")) $("model-lat").value = Number(nextLat).toFixed(6);
+      if ($("model-lng")) $("model-lng").value = Number(nextLng).toFixed(6);
+      if ($("place-position")) $("place-position").textContent = `${Number(nextLat).toFixed(6)}, ${Number(nextLng).toFixed(6)}`;
+      return;
+    }
+
+    panMapByPixels(dx, dy, surface);
   }, true);
 
   const stopDrag = (event) => {
@@ -250,11 +321,6 @@ function enableMapPointerNavigation() {
     if (!mapState.map) return;
     event.preventDefault();
     event.stopPropagation();
-    // Horizontal two-finger trackpad movement pans; wheel and pinch zoom.
-    if (Math.abs(event.deltaX) > 0.5) {
-      panMapByPixels(-event.deltaX, -event.deltaY, surface);
-      return;
-    }
     const multiplier = Math.exp(event.deltaY * 0.0015);
     mapState.map.range = Math.min(12000, Math.max(30, Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * multiplier));
   }, { capture: true, passive: false });
@@ -266,42 +332,13 @@ function panMapByPixels(dx, dy, surface) {
   const lat = Number(typeof center.lat === "function" ? center.lat() : center.lat);
   const lng = Number(typeof center.lng === "function" ? center.lng() : center.lng);
   const metersPerPixel = (Number(map.range || CFG.DEFAULT_VIEW.range) * 1.25) / Math.max(surface.clientHeight, 1);
-  const northMeters = -dy * metersPerPixel;
+  const northMeters = dy * metersPerPixel;
   const eastMeters = -dx * metersPerPixel;
   const nextLat = lat + northMeters / 111320;
   const nextLng = lng + eastMeters / (111320 * Math.max(Math.cos(lat * Math.PI / 180), 0.01));
   map.center = { lat: nextLat, lng: nextLng, altitude: Number(center.altitude || 0) };
   updateMapChrome(nextLat, nextLng);
 }
-function changeMapZoom(multiplier) {
-  if (!mapState.map) return;
-  mapState.map.range = Math.min(12000, Math.max(30, Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * multiplier));
-}
-$("btn-zoom-in").addEventListener("click", () => changeMapZoom(0.72));
-$("btn-zoom-out").addEventListener("click", () => changeMapZoom(1.38));
-function moveCamera(direction) {
-  if (!mapState.map) return;
-  const distance = Math.max(8, Number(mapState.map.range || CFG.DEFAULT_VIEW.range) * 0.12);
-  const center = mapState.map.center || CFG.DEFAULT_VIEW;
-  const lat = Number(typeof center.lat === "function" ? center.lat() : center.lat);
-  const lng = Number(typeof center.lng === "function" ? center.lng() : center.lng);
-  const deltaLat = direction === "north" ? distance : direction === "south" ? -distance : 0;
-  const deltaLng = direction === "east" ? distance : direction === "west" ? -distance : 0;
-  const nextLat = lat + deltaLat / 111320;
-  const nextLng = lng + deltaLng / (111320 * Math.max(Math.cos(lat * Math.PI / 180), 0.01));
-  mapState.map.center = { lat: nextLat, lng: nextLng, altitude: Number(center.altitude || 0) };
-  updateMapChrome(nextLat, nextLng);
-}
-function changeCameraTilt(amount) {
-  if (mapState.map) mapState.map.tilt = Math.min(85, Math.max(20, Number(mapState.map.tilt || CFG.DEFAULT_VIEW.tilt) + amount));
-}
-$("btn-pan-north").addEventListener("click", () => moveCamera("north"));
-$("btn-pan-south").addEventListener("click", () => moveCamera("south"));
-$("btn-pan-east").addEventListener("click", () => moveCamera("east"));
-$("btn-pan-west").addEventListener("click", () => moveCamera("west"));
-$("btn-tilt-up").addEventListener("click", () => changeCameraTilt(-5));
-$("btn-tilt-down").addEventListener("click", () => changeCameraTilt(5));
-$("btn-camera-reset").addEventListener("click", () => flyTo(Number(state.lat || CFG.DEFAULT_VIEW.lat), Number(state.lng || CFG.DEFAULT_VIEW.lng), CFG.DEFAULT_VIEW));
 function replaceAddressMarker(lat, lng) {
   if (!mapState.map || !mapState.markerClass) return;
   if (mapState.marker) mapState.map.removeChild(mapState.marker);
