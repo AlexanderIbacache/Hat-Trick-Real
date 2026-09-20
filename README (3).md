@@ -38,8 +38,8 @@ This version changes the stack to:
 | Area / campus 3D context | **Google Maps 3D Maps** JavaScript API using a **Google Maps Demo Key** |
 | Address → coordinates | **Google Geocoding API v4** with the Demo Key |
 | Building photos | **User uploads 1–4 photos**. This is deliberate: the Demo Key does not expose Google user-generated photo content. |
-| Prompt → 2D building preview | **Hugging Face Inference Providers**, default model `black-forest-labs/FLUX.2-klein-9B` |
-| Image → 3D | **Stability AI Stable Fast 3D** public Hugging Face Space via `@gradio/client` |
+| Prompt → 2D building preview | **Puter.js + FLUX** in the browser, using the `black-forest-labs/flux-schnell` model |
+| Image → 3D | **Tripo** textured mesh reconstruction |
 | Building footprint | **OpenStreetMap / Overpass** |
 | Real scale / orientation | OSM footprint minimum-area rectangle + GLB POSITION bounds |
 | Ground alignment | Google 3D model `altitudeMode: CLAMP_TO_GROUND` |
@@ -75,11 +75,11 @@ cd frontend
 npx serve .
 ```
 
-Do not put your Hugging Face token in `frontend/config.js`; it stays in `backend/.env`.
+No API keys are required for the browser-side Puter + FLUX image step. Keep the Google Maps Demo Key in the backend `.env` only.
 
 ### 3. Free credentials
 
-You need a Google Maps Demo Key for the map/geocoder and a free Hugging Face access token for the AI image step. Hugging Face currently documents a small monthly free-credit allowance for Inference Providers, so this is **not unlimited free inference**. The mesh route also relies on a public Space and can queue/sleep.
+You need a Google Maps Demo Key for the map/geocoder. The image preview runs directly in the browser via Puter.js and FLUX, and the 3D mesh step uses the Tripo backend route.
 
 ## Important competition talking points
 
@@ -137,4 +137,4 @@ backend/
 
 ## Sources
 
-The current implementation follows the official Google Maps Demo Key / 3D Maps documentation and current Hugging Face / Gradio SDK documentation for the free/no-card portion of the stack.
+The current implementation follows the official Google Maps Demo Key / 3D Maps documentation and the browser-side Puter.js + FLUX workflow for the no-API-key image step.
