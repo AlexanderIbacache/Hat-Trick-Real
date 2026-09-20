@@ -358,7 +358,7 @@ function toImageRecordFromPuter(result) {
   return null;
 }
 
-async function callWithTimeout(fn, timeoutMs = 15000) {
+async function callWithTimeout(fn, timeoutMs = 45_000) {
   let timer;
   return Promise.race([
     Promise.resolve().then(fn),
@@ -366,6 +366,24 @@ async function callWithTimeout(fn, timeoutMs = 15000) {
       timer = setTimeout(() => reject(new Error(`Puter generation timed out after ${timeoutMs}ms.`)), timeoutMs);
     }),
   ]).finally(() => clearTimeout(timer));
+}
+
+function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function retryImageGeneration(generate, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await generate();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        console.warn(`FLUX image generation attempt ${attempt} failed; retrying.`, error);
+        await wait(1_000 * (2 ** (attempt - 1)));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function extractTextFromPuterResponse(value) {
@@ -404,14 +422,14 @@ async function generatePreviewWithPuter(prompt) {
     ].join(" ");
 
     try {
-      const result = await callWithTimeout(() => ai.txt2img(finalPrompt, {
+      const result = await retryImageGeneration(() => callWithTimeout(() => ai.txt2img(finalPrompt, {
         model: "black-forest-labs/flux-2-klein-4b",
         input_image: photo.url,
         input_image_mime_type: photo.mimeType || "image/png",
         output_quality: 50,
         output_megapixels: "0.5",
         response_format: "webp",
-      }), 18000);
+      }), 45_000));
 
       const record = toImageRecordFromPuter(result);
       if (record) generated.push(record);

@@ -26,14 +26,17 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
     const fileTokens = await Promise.all(references.map((reference, index) => uploadTripoImage({ ...reference, apiKey, index })));
     const taskId = await createTripoModelTask(fileTokens, apiKey);
     const task = await waitForTripoTask(taskId, apiKey);
-    // V2 returns `model`; `model_url` is retained for compatibility with V3
-    // responses. Prefer the textured PBR artifact if Tripo provides it.
-    const modelUrl = task.output?.pbr_model || task.output?.model || task.output?.model_url;
+    // V3 returns `model_url`. Legacy fields remain as fallbacks only, since
+    // some of them can be metadata rather than a directly downloadable URL.
+    const modelUrl = [task.output?.model_url, task.output?.pbr_model, task.output?.model]
+      .find((value) => typeof value === "string" && /^https?:\/\//i.test(value));
     if (!modelUrl) {
       throw new Error(`Tripo completed task ${taskId} without a downloadable model URL.`);
     }
 
-    const modelResponse = await tripoFetch(modelUrl);
+    // A task can be marked successful a few seconds before its CDN artifact is
+    // available. Retry the download independently; never create a second task.
+    const modelResponse = await tripoFetch(modelUrl, {}, { retries: 4, retryStatuses: [404, 429, 500, 502, 503, 504] });
     if (!modelResponse.ok) throw new Error(`Could not download Tripo's generated GLB (${modelResponse.status}).`);
     const glbBuffer = Buffer.from(await modelResponse.arrayBuffer());
     if (glbBuffer.toString("ascii", 0, 4) !== "glTF") throw new Error("Tripo returned a model that is not a GLB file.");
@@ -63,13 +66,25 @@ function tripoHeaders(apiKey) {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
-async function tripoFetch(url, options) {
-  try {
-    return await fetch(url, options);
-  } catch (error) {
-    const code = error?.cause?.code ? ` (${error.cause.code})` : "";
-    throw new Error(`Could not reach Tripo at ${new URL(url).host}${code}. Check your internet connection or Tripo service status.`);
+async function tripoFetch(url, options = {}, { retries = 2, timeoutMs = 45_000, retryStatuses = [408, 429, 500, 502, 503, 504] } = {}) {
+  let lastError;
+  let retryAfterSeconds;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+      if (!retryStatuses.includes(response.status) || attempt === retries) return response;
+      lastError = new Error(`Tripo returned ${response.status}`);
+      retryAfterSeconds = Number(response.headers.get("retry-after"));
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) break;
+    }
+    // Respect rate limiting where possible, then use a short bounded backoff.
+    const delay = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 750 * (2 ** attempt);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 8_000)));
   }
+  const code = lastError?.cause?.code ? ` (${lastError.cause.code})` : "";
+  throw new Error(`Could not reach Tripo at ${new URL(url).host} after ${retries + 1} attempts${code}. Check your internet connection or Tripo service status.`);
 }
 
 async function uploadTripoImage({ base64, mimeType, apiKey, index = 0 }) {
@@ -79,7 +94,7 @@ async function uploadTripoImage({ base64, mimeType, apiKey, index = 0 }) {
   const ext = mimeType.includes("jpeg") ? "jpg" : mimeType.includes("webp") ? "webp" : "png";
   const form = new FormData();
   form.append("file", new Blob([bytes], { type: mimeType }), `reference-${index + 1}.${ext}`);
-  const response = await tripoFetch(`${TRIPO_API_BASE}/files`, { method: "POST", headers: tripoHeaders(apiKey), body: form });
+  const response = await tripoFetch(`${TRIPO_API_BASE}/files`, { method: "POST", headers: tripoHeaders(apiKey), body: form }, { retries: 3 });
   const payload = await readTripoResponse(response, "upload the image");
   const fileToken = payload.data?.file_token || payload.data?.image_token;
   if (!fileToken) throw new Error("Tripo did not return a file token for the uploaded image.");
@@ -95,6 +110,8 @@ async function createTripoModelTask(fileTokens, apiKey) {
   const inputs = isMultiview
     ? fileTokens.map((fileToken, index) => ({ [viewNames[index]]: fileToken }))
     : undefined;
+  // Do not retry this POST: a connection failure after Tripo receives it could
+  // otherwise create a duplicate, credit-consuming task.
   const response = await tripoFetch(`${TRIPO_API_BASE}/generation/${isMultiview ? "multiview-to-model" : "image-to-model"}`, {
     method: "POST",
     headers: { ...tripoHeaders(apiKey), "Content-Type": "application/json" },
@@ -110,7 +127,7 @@ async function createTripoModelTask(fileTokens, apiKey) {
       geometry_quality: process.env.TRIPO_GEOMETRY_QUALITY || "standard",
       export_uv: true,
     }),
-  });
+  }, { retries: 0, timeoutMs: 60_000 });
   const payload = await readTripoResponse(response, "start image-to-3D generation");
   if (!payload.data?.task_id) throw new Error("Tripo did not return a generation task ID.");
   return payload.data.task_id;
@@ -143,7 +160,7 @@ async function waitForTripoTask(taskId, apiKey) {
 }
 
 function isTransientTripoError(error) {
-  return /\b(?:Bad Gateway|Gateway Timeout|Service Unavailable|Too Many Requests|502|503|504|429)\b/i.test(error?.message || "");
+  return /\b(?:Bad Gateway|Gateway Timeout|Service Unavailable|Too Many Requests|Internal Server Error|Could not reach Tripo|408|429|500|502|503|504)\b/i.test(error?.message || "");
 }
 
 function normalizeReferences({ base64, mimeType, images }) {
