@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tripo Mesh Test</title>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#0b0b0d; color:#f5f5f2; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; box-sizing:border-box; }
+    main { width:min(900px,100%); padding:26px; border:1px solid #303035; border-radius:20px; background:#141416; box-shadow:0 20px 70px #0008; }
+    h1 { margin:0 0 7px; font-size:24px; } p { color:#aaa; line-height:1.5; }
+    .upload { display:block; margin:20px 0 12px; padding:24px; border:1px dashed #555; border-radius:14px; text-align:center; cursor:pointer; }
+    input { display:none; } .refs { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+    .refs button { position:relative; min-height:110px; padding:0; overflow:hidden; border:2px solid transparent; border-radius:10px; background:#222; cursor:pointer; }
+    .refs button.selected { border-color:#ff4545; } .refs img { width:100%; height:100%; object-fit:cover; display:block; }
+    .refs span { position:absolute; bottom:5px; left:5px; padding:3px 5px; border-radius:5px; background:#000b; font-size:10px; }
+    button.action { margin-top:16px; padding:11px 15px; border:0; border-radius:9px; background:#ef3737; color:#fff; font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; } #status { min-height:24px; margin:14px 0; color:#bbb; } #status.error { color:#ff8989; }
+    model-viewer { width:100%; height:460px; display:none; border-radius:14px; background:#202025; } a { color:#ff7777; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tripo image-to-3D test bench</h1>
+    <p>This page is separate from the main app. Upload one image, or 2–4 views of the same building in <strong>front, left, back, right</strong> order. It does not run the AI image-remix or map-placement flow.</p>
+    <label class="upload" for="references">Choose 1–4 building reference images (PNG, JPEG, or WebP)<input id="references" type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
+    <div class="refs" id="refs"></div>
+    <button class="action" id="generate" disabled>Generate 3D model from reference views</button>
+    <div id="status">Add an image to begin.</div>
+    <model-viewer id="viewer" camera-controls auto-rotate shadow-intensity="1" exposure="1" alt="Generated Tripo 3D model"></model-viewer>
+    <p id="download" hidden><a download="tripo-model.glb">Download generated GLB</a></p>
+  </main>
+  <script>
+    const API = 'http://localhost:3001';
+    const refs = []; let selected = 0;
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (message, error = false) => { $('status').textContent = message; $('status').className = error ? 'error' : ''; };
+    $('references').addEventListener('change', async (event) => {
+      refs.length = 0;
+      const files = [...event.target.files].slice(0, 4);
+      for (const file of files) {
+        const url = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+        refs.push({ name:file.name, mimeType:file.type, base64:url.split(',')[1], url });
+      }
+      selected = 0; renderRefs(); $('generate').disabled = !refs.length;
+      setStatus(refs.length ? (refs.length === 1 ? 'Selected one reference image.' : `Selected ${refs.length} ordered views. Tripo will use them as front, left, back, right.`) : 'Add an image to begin.');
+    });
+    function renderRefs() {
+      $('refs').innerHTML = '';
+      refs.forEach((ref, index) => {
+        const button = document.createElement('button'); button.className = index === selected ? 'selected' : '';
+        const image = document.createElement('img'); image.src = ref.url; image.alt = ref.name;
+        const label = document.createElement('span'); label.textContent = ['FRONT', 'LEFT', 'BACK', 'RIGHT'][index];
+        button.append(image, label);
+        button.onclick = () => { selected = index; renderRefs(); setStatus(`Reference ${index + 1} selected. Multi-view generation uses every uploaded image in order.`); };
+        $('refs').append(button);
+      });
+    }
+    $('generate').addEventListener('click', async () => {
+      const ref = refs[selected]; if (!ref) return;
+      $('generate').disabled = true; setStatus('Uploading reference and generating textured PBR GLB with Tripo. This can take several minutes.');
+      try {
+        const response = await fetch(`${API}/api/mesh`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ base64:ref.base64, mimeType:ref.mimeType, images:refs.map(({ base64, mimeType }) => ({ base64, mimeType })) }) });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || `Mesh request failed (${response.status}).`);
+        const url = `${API}${result.glbUrl}`;
+        $('viewer').src = url; $('viewer').style.display = 'block';
+        $('download').hidden = false; $('download').querySelector('a').href = url;
+        setStatus(`Model ready — ${result.provider}. Bounds: ${result.meshDimensions.width.toFixed(2)} × ${result.meshDimensions.height.toFixed(2)} × ${result.meshDimensions.depth.toFixed(2)}.`);
+      } catch (error) { setStatus(error.message, true); }
+      finally { $('generate').disabled = false; }
+    });
+  </script>
+</body>
+</html>

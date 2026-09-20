@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FORM — Building to 3D</title>
+  <meta name="description" content="Turn a real-world building photo into a prompt-driven 3D building anchored to a real location." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <main id="app">
+    <aside class="sidebar glass-panel">
+      <div class="topbar">
+        <div class="brand-mark">
+          <img src="assets/hat-logo.png" alt="HAT logo">
+        </div>
+        <div>
+          <div class="brand-name">Brick By Click</div>
+          <div class="brand-sub">The Hat-Trick</div>
+        </div>
+        <span class="live-pill"><i></i> DEMO</span>
+      </div>
+
+      <header class="hero-copy">
+        <h1>Remix a building.<br><em>Put it back.</em></h1>
+        <p>Locate a real building, transform it with AI, make a 3D model from it, then anchor it back onto the real map.</p>
+      </header>
+
+      <div class="pipeline" aria-label="Pipeline progress">
+        <span class="dot active" id="pipeline-1">01</span><span class="line"></span>
+        <span class="dot" id="pipeline-2">02</span><span class="line"></span>
+        <span class="dot" id="pipeline-3">03</span><span class="line"></span>
+        <span class="dot" id="pipeline-4">04</span><span class="line"></span>
+        <span class="dot" id="pipeline-5">05</span>
+      </div>
+
+      <section class="step active-step" id="step-address">
+        <div class="step-heading"><div class="step-index">01</div><div><h2>Find the site</h2><p>Enter the exact building address, then explore the map.</p></div></div>
+        <label for="address-input">Building address</label>
+        <div class="input-row">
+          <input id="address-input" type="text" placeholder="750 Drillfield Dr, Blacksburg, VA" autocomplete="street-address" />
+          <button class="accent-btn small" id="btn-geocode">Locate</button>
+        </div>
+        <div class="readout location-card" id="geocode-readout">Waiting for a site.</div>
+        <div class="status" id="geocode-status"></div>
+      </section>
+
+      <section class="step" id="step-photos" data-locked="true">
+        <div class="step-heading"><div class="step-index">02</div><div><h2>Add references</h2><p>Use 1–4 photos of the building.</p></div></div>
+        <div class="dropzone" id="dropzone">
+          <input id="photo-input" type="file" accept="image/*" multiple hidden />
+          <div class="upload-orb">＋</div>
+          <strong>Drop photos here</strong>
+          <span>or click to browse</span>
+        </div>
+        <div class="photo-grid" id="photo-grid"></div>
+        <div class="photo-note">TIP: submit photos of varying angles and distances.</div>
+        <div class="status" id="photos-status"></div>
+      </section>
+
+      <section class="step" id="step-prompt" data-locked="true">
+        <div class="step-heading"><div class="step-index">03</div><div><h2>Describe the remix</h2><p>Detail the changes you want in the design.</p></div></div>
+        <label for="prompt-input">AI prompt</label>
+        <textarea id="prompt-input" rows="4" placeholder="Transform the featured building into a futuristic eco-skyscraper at dusk. Replace the original facade with sleek, curved dark-glass panels integrated with vertical gardens, climbing vines, and glowing bio-luminescent plants along the balconies."></textarea>
+        <div class="prompt-row"><span class="prompt-hint">Tip: describe in-depth and specific changes.</span><button class="accent-btn" id="btn-edit">Generate preview</button></div>
+        <div class="preview-frame" id="preview-frame"><div class="generated-grid" id="generated-grid"></div></div>
+        <div class="status" id="edit-status"></div>
+      </section>
+
+      <section class="step" id="step-mesh" data-locked="true">
+        <div class="step-heading"><div class="step-index">04</div><div><h2>Make the 3D model</h2><p>Tripo reconstruction + textured PBR material + footprint fit.</p></div></div>
+        <div class="data-pair"><div><span>AI route</span><strong id="mesh-readout">Not generated</strong></div><div><span>Footprint</span><strong id="footprint-readout">Waiting</strong></div></div>
+        <button class="accent-btn full" id="btn-mesh">Generate textured 3D model</button>
+        <div class="status" id="mesh-status"></div>
+      </section>
+
+      <section class="step" id="step-place" data-locked="true">
+        <div class="step-heading"><div class="step-index">05</div><div><h2>Return to reality</h2><p>Scale, heading and ground alignment.</p></div></div>
+        <div class="placement-card">
+          <div><span>Position</span><strong id="place-position">—</strong></div>
+          <div><span>Orientation</span><strong id="place-orientation">—</strong></div>
+          <div><span>Scale</span><strong id="place-scale">—</strong></div>
+        </div>
+        <div class="button-row">
+          <button class="accent-btn" id="btn-place">Place on map</button>
+          <button class="ghost-btn" id="btn-toggle" disabled>Show model</button>
+        </div>
+        <a id="download-mesh" class="download-link" href="#" download hidden>Download GLB ↘</a>
+        <div class="status" id="place-status"></div>
+      </section>
+
+      <footer>
+        <span>Built by The HAT-Trick</span>
+      </footer>
+    </aside>
+
+    <section class="map-shell">
+      <div class="map-chrome top-left glass-chip">
+        <span class="map-dot"></span>
+        <span id="map-label">3D site context</span>
+      </div>
+      <div class="map-chrome map-controls glass-chip" aria-label="Map controls">
+        <button id="btn-zoom-in" aria-label="Zoom in">+</button>
+        <button id="btn-zoom-out" aria-label="Zoom out">−</button>
+      </div>
+      <div class="map-chrome bottom-right glass-chip">
+        <span>Map: Google 3D Maps</span><span class="separator">·</span><span id="map-coordinates">37.2296, -80.4139</span>
+      </div>
+      <div id="map3d"></div>
+      <div id="map-fallback" class="map-fallback" hidden>
+      </div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

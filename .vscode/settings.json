@@ -1,0 +1,14 @@
+{
+  "liveServer.settings.ignoreFiles": [
+    "**/.vscode/**",
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/[.]git/**",
+    "**/[.]svn/**",
+    "**/[.]hg/**",
+    "**/CVS/**",
+    "**/.DS_Store",
+    "**/Backend/generated/**"
+  ],
+  "liveServer.settings.port": 5501
+}
