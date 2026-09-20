@@ -1,6 +1,6 @@
 const CFG = window.APP_CONFIG;
 const $ = (id) => document.getElementById(id);
-const DEFAULT_BACKEND_PORTS = [3001, 3002, 3003, 3004, 3005];
+const DEFAULT_BACKEND_PORTS = [3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010];
 
 async function resolveBackendUrl() {
   const candidates = [...new Set([
@@ -215,10 +215,23 @@ async function initGoogle3D() {
     updateMapChrome(CFG.DEFAULT_VIEW.lat, CFG.DEFAULT_VIEW.lng);
   } catch (err) {
     console.error(err);
-    $("map-fallback").hidden = false;
-    $("map-fallback").querySelector("h3").textContent = "Google Maps unavailable";
-    $("map-fallback").querySelector("p").textContent = `Google 3D Maps could not initialize: ${err.message}`;
+    const message = /quota|limit reached|demonstration|demo key|API key|invalid key|request denied/i.test(String(err?.message || ""))
+      ? "Google 3D Maps is rate-limited or the key is invalid. Replace YOUR_GOOGLE_MAPS_KEY in Backend/.env with a valid Google Cloud API key to load the live 3D map."
+      : `Google 3D Maps could not initialize: ${err.message}`;
+    showMapFallback(message, "Google Maps unavailable");
   }
+}
+
+function showMapFallback(message, title = "Google Maps unavailable") {
+  const shell = $("map-fallback");
+  if (!shell) return;
+  shell.hidden = false;
+  const heading = shell.querySelector("h3") || document.createElement("h3");
+  const copy = shell.querySelector("p") || document.createElement("p");
+  if (!heading.parentNode) shell.appendChild(heading);
+  if (!copy.parentNode) shell.appendChild(copy);
+  heading.textContent = title;
+  copy.textContent = message;
 }
 
 function loadGoogleScript(key) {
