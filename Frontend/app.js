@@ -42,7 +42,7 @@ const state = {
   modelVisible: false,
 };
 
-const mapState = { map: null, marker: null, modelClass: null, markerClass: null, drag: null };
+const mapState = { map: null, marker: null, modelMarker: null, modelClass: null, markerClass: null, drag: null };
 
 function getMapCenterLatLng() {
   const center = mapState.map?.center || CFG.DEFAULT_VIEW;
@@ -257,6 +257,24 @@ function loadGoogleScript(key) {
 
 function updateMapChrome(lat, lng) {
   $("map-coordinates").textContent = `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
+}
+function showModelMapIndicator({ lat, lng, altitude, url, dims, scale, status }) {
+  const indicator = $("model-map-indicator");
+  if (indicator) {
+    indicator.hidden = false;
+    indicator.innerHTML = `<strong>3D MODEL ${status === "loaded" ? "· LOADED" : "· ANCHORED"}</strong><span>${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)} · Z ${Number(altitude).toFixed(1)} m</span><span>AI GLB ${Number(dims.width).toFixed(1)} × ${Number(dims.height).toFixed(1)} × ${Number(dims.depth).toFixed(1)} m</span><span>Map scale ${Number(scale.x).toFixed(2)} × ${Number(scale.y).toFixed(2)} × ${Number(scale.z).toFixed(2)}</span><span>${url}</span>`;
+  }
+}
+function placeModelIndicator(lat, lng, altitude) {
+  if (!mapState.map || !mapState.markerClass) return;
+  if (mapState.modelMarker?.parentNode === mapState.map) mapState.map.removeChild(mapState.modelMarker);
+  mapState.modelMarker = new mapState.markerClass({
+    position: { lat, lng, altitude: Math.max(altitude, 0) },
+    altitudeMode: "RELATIVE_TO_GROUND",
+    label: "3D MODEL",
+    collisionBehavior: "OPTIONAL_AND_HIDES_LOWER_PRIORITY",
+  });
+  mapState.map.appendChild(mapState.modelMarker);
 }
 function flyTo(lat, lng, options = {}) {
   if (!mapState.map) return;
@@ -669,6 +687,11 @@ $("btn-place").addEventListener("click", async () => {
       heading -= 90;
     }
     scaleY = Number(fp.heightMeters || 10) / Number(dims.height || 1);
+    const modelScale = {
+      x: clampFiniteScale(scaleX),
+      y: clampFiniteScale(scaleY),
+      z: clampFiniteScale(scaleZ),
+    };
 
     const center = fp.center || { lat:state.lat, lng:state.lng };
     $("model-lat").value = Number(center.lat).toFixed(6);
@@ -681,20 +704,23 @@ $("btn-place").addEventListener("click", async () => {
     const modelUrl = new URL(state.mesh.glbUrl, `${API}/`).href;
     setStatus("place-status", "Checking the generated GLB before adding it to Google Maps…", "busy");
     const asset = await verifyModelAsset(modelUrl);
+    placeModelIndicator(Number(center.lat), Number(center.lng), 0);
+    showModelMapIndicator({ lat:center.lat, lng:center.lng, altitude:0, url:modelUrl, dims, scale:modelScale, status:"anchored" });
     const model = new mapState.modelClass({
       src: modelUrl,
       position: { lat:Number(center.lat), lng:Number(center.lng), altitude:0 },
       orientation: { heading:normalizeHeading(heading), tilt:0, roll:0 },
-      scale: { x:scaleX, y:scaleY, z:scaleZ },
+      scale: modelScale,
       altitudeMode: "RELATIVE_TO_GROUND",
     });
     if (state.model?.parentNode === mapState.map) mapState.map.removeChild(state.model);
     mapState.map.appendChild(model);
-    state.model = model; state.modelBaseScale = { x:scaleX, y:scaleY, z:scaleZ }; state.modelVisible = true;
+    state.model = model; state.modelBaseScale = modelScale; state.modelVisible = true;
 
     if (isFirstPlacement) flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
     setStatus("place-status", `GLB verified (${asset.contentType || "binary"}). Waiting for Google Maps to load the model…`, "busy");
     await modelReady;
+    showModelMapIndicator({ lat:center.lat, lng:center.lng, altitude:0, url:modelUrl, dims, scale:modelScale, status:"loaded" });
     $("place-position").textContent = `${Number(center.lat).toFixed(6)}, ${Number(center.lng).toFixed(6)}`;
     $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading`;
     $("place-scale").textContent = `${scaleX.toFixed(2)} × ${scaleY.toFixed(2)} × ${scaleZ.toFixed(2)}`;
@@ -719,10 +745,13 @@ $("btn-update-model").addEventListener("click", () => {
   const currentScale = state.modelBaseScale || state.model.scale || { x:1, y:1, z:1 };
   state.model.position = { lat, lng, altitude };
   state.model.orientation = { heading: normalizeHeading(heading), tilt, roll };
-  state.model.scale = { x:Number(currentScale.x) * size, y:Number(currentScale.y) * size, z:Number(currentScale.z) * size };
+  const updatedScale = { x:clampFiniteScale(Number(currentScale.x) * size), y:clampFiniteScale(Number(currentScale.y) * size), z:clampFiniteScale(Number(currentScale.z) * size) };
+  state.model.scale = updatedScale;
+  placeModelIndicator(lat, lng, altitude);
+  showModelMapIndicator({ lat, lng, altitude, url:state.mesh.glbUrl, dims:state.mesh.meshDimensions || { width:1, height:1, depth:1 }, scale:updatedScale, status:"loaded" });
   $("place-position").textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}, Z ${altitude.toFixed(1)} m`;
   $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading · ${tilt.toFixed(1)}° tilt · ${roll.toFixed(1)}° roll`;
-  $("place-scale").textContent = `${(Number(currentScale.x) * size).toFixed(2)} × ${(Number(currentScale.y) * size).toFixed(2)} × ${(Number(currentScale.z) * size).toFixed(2)}`;
+  $("place-scale").textContent = `${updatedScale.x.toFixed(2)} × ${updatedScale.y.toFixed(2)} × ${updatedScale.z.toFixed(2)}`;
   setStatus("place-status", "Model placement updated.", "ok");
 });
 
@@ -780,6 +809,10 @@ async function urlToBase64(url) {
   });
 }
 function normalizeHeading(deg) { return ((Number(deg) % 360) + 360) % 360; }
+function clampFiniteScale(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.min(1000, Math.max(0.001, numeric)) : 1;
+}
 
 async function bootstrap() {
   try {
