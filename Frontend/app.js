@@ -14,6 +14,7 @@ async function resolveBackendUrl() {
       if (response.ok) return candidate;
     } catch (_err) {
       // Ignore and keep trying the next candidate.
+      // Ignore and keep trying the next candidate 2.
     }
   }
 
