@@ -1,7 +1,7 @@
 // Public frontend settings only. Runtime credentials are requested from the
 // local backend so no key is committed with the frontend source.
 window.APP_CONFIG = {
-  BACKEND_URL: "https://hat-trick-real.onrender.com/",
+  BACKEND_URL: "https://hat-trick-real.onrender.com",
   DEFAULT_VIEW: {
     lat: 37.2296,
     lng: -80.4139,
