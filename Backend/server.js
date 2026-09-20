@@ -22,7 +22,7 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     providers: {
       maps: Boolean(process.env.GOOGLE_MAPS_DEMO_KEY),
-      image: Boolean(process.env.HF_TOKEN),
+      image: true,
       mesh: process.env.MESH_PROVIDER || "tripo",
     },
   });
@@ -56,15 +56,11 @@ app.post("/api/footprint", async (req, res) => {
 
 app.post("/api/edit-image", async (req, res) => {
   try {
-    const { base64, mimeType, images, prompt } = req.body || {};
-    if (!prompt?.trim()) return res.status(400).json({ error: "A source image and prompt are required." });
-    if (Array.isArray(images)) {
-      if (!images.length) return res.status(400).json({ error: "At least one reference image is required." });
-      const generated = await editBuildingImages({ images, prompt });
-      return res.json({ images: generated, model: generated[0]?.model, provider: generated[0]?.provider });
-    }
-    if (!base64) return res.status(400).json({ error: "A source image and prompt are required." });
-    res.json(await editBuildingImage({ base64, mimeType, prompt }));
+    const { prompt } = req.body || {};
+    if (!prompt?.trim()) return res.status(400).json({ error: "A prompt is required." });
+    return res.status(410).json({
+      error: "Image generation now runs in the browser via Puter.js. The old Hugging Face backend route has been retired.",
+    });
   } catch (err) { sendError(res, err); }
 });
 
@@ -89,5 +85,24 @@ function sendError(res, err, defaultStatus = 500) {
   res.status(defaultStatus).json({ error: err?.message || "Unexpected server error." });
 }
 
-const port = Number(process.env.PORT || 3001);
-app.listen(port, () => console.log(`Address→3D backend listening on http://localhost:${port}`));
+function startServer(startPort) {
+  const port = Number(startPort || process.env.PORT || 3001);
+  const server = app.listen(port, () => {
+    process.env.PORT = String(port);
+    console.log(`Address→3D backend listening on http://localhost:${port}`);
+  });
+
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      const nextPort = port + 1;
+      console.warn(`Port ${port} is busy. Retrying on ${nextPort}.`);
+      startServer(nextPort);
+      return;
+    }
+
+    console.error("Failed to start backend server:", err);
+    process.exit(1);
+  });
+}
+
+startServer(Number(process.env.PORT || 3001));

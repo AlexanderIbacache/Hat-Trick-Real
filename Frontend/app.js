@@ -1,6 +1,26 @@
 const CFG = window.APP_CONFIG;
 const $ = (id) => document.getElementById(id);
-const API = CFG.BACKEND_URL.replace(/\/$/, "");
+const DEFAULT_BACKEND_PORTS = [3001, 3002, 3003, 3004, 3005];
+
+async function resolveBackendUrl() {
+  const candidates = [...new Set([
+    CFG.BACKEND_URL,
+    ...DEFAULT_BACKEND_PORTS.map((port) => `http://localhost:${port}`),
+  ].map((url) => String(url).replace(/\/$/, "")))];
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(`${candidate}/api/health`, { cache: "no-store" });
+      if (response.ok) return candidate;
+    } catch (_err) {
+      // Ignore and keep trying the next candidate.
+    }
+  }
+
+  return CFG.BACKEND_URL.replace(/\/$/, "");
+}
+
+let API = CFG.BACKEND_URL.replace(/\/$/, "");
 
 const state = {
   address: null,
@@ -21,12 +41,22 @@ const state = {
 
 const mapState = { map: null, marker: null, modelClass: null, markerClass: null, drag: null };
 
+async function getApiBaseUrl() {
+  const resolved = await resolveBackendUrl();
+  if (resolved && resolved !== API) {
+    API = resolved;
+    CFG.BACKEND_URL = resolved;
+    window.APP_CONFIG.BACKEND_URL = resolved;
+  }
+  return API;
+}
+
 function api(path, body) {
-  return fetch(`${API}${path}`, {
+  return getApiBaseUrl().then((baseUrl) => fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).catch((err) => {
+  })).catch((err) => {
     if (err instanceof TypeError) {
       throw new Error(`Cannot reach the backend at ${API}. Start it with \"npm run dev\" from the Backend folder.`);
     }
@@ -48,6 +78,13 @@ function activate(stepNumber) {
 function fmtMeters(n) { return `${Number(n).toFixed(1)} m`; }
 
 async function loadClientConfig() {
+  const backendUrl = await resolveBackendUrl();
+  if (backendUrl && backendUrl !== API) {
+    API = backendUrl;
+    CFG.BACKEND_URL = backendUrl;
+    window.APP_CONFIG.BACKEND_URL = backendUrl;
+  }
+
   const res = await fetch(`${API}/api/client-config`);
   const config = await res.json().catch(() => ({}));
   if (!res.ok || !config.googleMapsDemoKey) {
@@ -292,17 +329,85 @@ function markSelectedTile() { [...$("photo-grid").children].forEach((el, i) => e
 function escapeHtml(s) { return s.replace(/[&<>'"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c])); }
 
 // 03: prompt + image-to-image preview
+const PUTER_FLUX_MODELS = [
+  "black-forest-labs/flux-schnell",
+  "black-forest-labs/flux-2-pro",
+  "black-forest-labs/flux-1.1-pro",
+];
+
+function resolveImageUrl(url) {
+  if (!url) return "";
+  return /^data:|^blob:|^https?:\/\//i.test(url) ? url : `${API}${url}`;
+}
+
+async function generatePreviewWithPuter({ photos, prompt }) {
+  if (!window.puter?.ai?.txt2img) {
+    throw new Error("Puter.js did not load. Reload the page and allow the Puter script to initialize.");
+  }
+
+  const referencePhotos = [...photos]
+    .sort((a, b) => Number(b === state.selectedPhoto) - Number(a === state.selectedPhoto))
+    .slice(0, 2);
+
+  if (!referencePhotos.length) {
+    throw new Error("No reference image is available for the remix.");
+  }
+
+  const enhancedPrompt = [
+    "Preserve the exact building silhouette, camera angle, perspective, and surrounding context from the reference structure.",
+    prompt.trim(),
+    "Reimagine the building in a realistic architectural way while keeping the main massing, windows, proportions, and site context consistent. Do not add text, logos, people, or unrelated structures.",
+  ].join(" ");
+
+  let lastError;
+  for (const model of PUTER_FLUX_MODELS) {
+    try {
+      const generatedImages = [];
+      for (const photo of referencePhotos) {
+        const imageSource = photo.url || `data:${photo.mimeType || "image/png"};base64,${photo.base64}`;
+        const generated = await window.puter.ai.txt2img(enhancedPrompt, {
+          model,
+          input_image: imageSource,
+          input_image_mime_type: photo.mimeType || "image/png",
+          steps: 3,
+          output_megapixels: "0.5",
+          output_quality: 70,
+          response_format: "webp",
+        });
+
+        const src = generated?.src || generated?.currentSrc;
+        if (!src) throw new Error("Puter did not return a valid generated image.");
+
+        generatedImages.push({
+          imageUrl: src,
+          mimeType: src.startsWith("data:image/") ? src.match(/^data:(image\/[^;]+)/)?.[1] || "image/webp" : "image/webp",
+          provider: "Puter.js",
+          model,
+        });
+      }
+
+      if (generatedImages.length) {
+        return { images: generatedImages };
+      }
+    } catch (err) {
+      lastError = err;
+      console.warn(`Puter model ${model} failed; trying next FLUX option.`, err);
+    }
+  }
+
+  throw lastError || new Error("The Puter FLUX image generation request failed.");
+}
+
 $("btn-edit").addEventListener("click", async () => {
   const prompt = $("prompt-input").value.trim();
   if (!state.selectedPhoto || !prompt) return;
-  setStatus("edit-status", "Sending reference + prompt to the image model…", "busy");
+  setStatus("edit-status", "Sending each reference image separately to Puter FLUX…", "busy");
   try {
-    const result = await api("/api/edit-image", {
-      images: state.photos.map(({ base64, mimeType }) => ({ base64, mimeType })),
-      prompt,
-    });
+    const result = await generatePreviewWithPuter({ photos: state.photos, prompt });
     state.editedImages = result.images || (result.imageUrl ? [result] : []);
     if (!state.editedImages.length) throw new Error("The image model did not return a generated view.");
+    result.model = state.editedImages[0]?.model || result.model;
+    result.provider = state.editedImages[0]?.provider || result.provider;
     selectGeneratedImage(0);
     renderGeneratedImages();
     $("preview-frame").style.display = "block";
@@ -329,7 +434,7 @@ function renderGeneratedImages() {
     button.dataset.label = `VIEW ${index + 1}`;
     button.classList.toggle("selected", image.imageUrl === state.editedImageUrl);
     const preview = document.createElement("img");
-    preview.src = `${API}${image.imageUrl}`;
+    preview.src = resolveImageUrl(image.imageUrl);
     preview.alt = `AI generated building view ${index + 1}`;
     button.appendChild(preview);
     button.addEventListener("click", () => selectGeneratedImage(index));
@@ -342,7 +447,7 @@ $("btn-mesh").addEventListener("click", async () => {
   if (!state.editedImageUrl) return;
   setStatus("mesh-status", "Reconstructing 3D + reading the real footprint…", "busy");
   try {
-    const imageBase64 = await urlToBase64(`${API}${state.editedImageUrl}`);
+    const imageBase64 = await urlToBase64(resolveImageUrl(state.editedImageUrl));
     const [mesh, footprint] = await Promise.all([
       api("/api/mesh", { base64:imageBase64.base64, mimeType:imageBase64.mimeType }),
       api("/api/footprint", { lat:state.lat, lng:state.lng }),
@@ -410,6 +515,14 @@ $("btn-toggle").addEventListener("click", () => {
 });
 
 async function urlToBase64(url) {
+  if (url.startsWith("data:")) {
+    const match = /^data:(image\/[^;]+);base64,(.+)$/i.exec(url);
+    if (match) {
+      return { base64: match[2], mimeType: match[1] || "image/png" };
+    }
+    return { base64: url.split(",")[1], mimeType: "image/png" };
+  }
+
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Could not read generated preview (${res.status}).`);
   const blob = await res.blob();
