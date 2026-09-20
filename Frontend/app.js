@@ -756,17 +756,30 @@ $("btn-update-model").addEventListener("click", () => {
 });
 
 $("btn-place-cube").addEventListener("click", async () => {
-  if (!state.footprint || !mapState.map || !mapState.modelClass) {
-    setStatus("place-status", "Generate the model and wait for Google Maps before placing the test cube.", "err");
+  if (!Number.isFinite(Number(state.lat)) || !Number.isFinite(Number(state.lng))) {
+    setStatus("geocode-status", "Locate a building first, then place the test cube.", "err");
     return;
   }
-  setStatus("place-status", "Creating a diagnostic cube GLB on the backend…", "busy");
+  if (!mapState.map || !mapState.modelClass) {
+    setStatus("geocode-status", "Google Maps is still loading. Try the test cube again in a moment.", "err");
+    return;
+  }
+  setStatus("geocode-status", "Creating a diagnostic cube at the located building…", "busy");
   try {
     const cube = await getApiJson("/api/fallback-cube");
     state.mesh = cube;
-    $("btn-place").click();
+    state.footprint = state.footprint || {
+      widthMeters: 20,
+      lengthMeters: 20,
+      heightMeters: 10,
+      headingDegrees: 0,
+      center: { lat: Number(state.lat), lng: Number(state.lng) },
+    };
+    unlock("step-place");
+    await $("btn-place").click();
+    setStatus("geocode-status", "Test cube placed. Use this to verify Google 3D model overlays before generating Tripo.", "ok");
   } catch (error) {
-    setStatus("place-status", `Diagnostic cube failed: ${error.message}`, "err");
+    setStatus("geocode-status", `Diagnostic cube failed: ${error.message}`, "err");
   }
 });
 
