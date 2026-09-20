@@ -7,6 +7,7 @@ import { GENERATED_DIR } from "./generatedDir.js";
 // uses Tripo's current V3 API, which is required by the V3 model identifiers.
 const TRIPO_API_BASE = "https://openapi.tripo3d.ai/v3";
 const TRIPO_DEFAULT_MODEL = "v3.1-20260211";
+const tripoTaskCreations = new Map();
 
 /**
  * Creates a Tripo image-to-3D model with texture and PBR maps. The API key is
@@ -23,8 +24,11 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
       throw new Error("TRIPO_API_KEY is not set. Add your Tripo API key to Backend/.env; it is used only by the backend.");
     }
     const references = normalizeReferences({ base64, mimeType, images });
-    const fileTokens = await Promise.all(references.map((reference, index) => uploadTripoImage({ ...reference, apiKey, index })));
-    const taskId = await createTripoModelTask(fileTokens, apiKey);
+    // Preserve a task for this exact reference set. If Tripo finished but its
+    // model CDN briefly fails, a button retry resumes this paid task instead
+    // of uploading and charging for a new one.
+    const taskCacheKey = makeTaskCacheKey(references);
+    const taskId = await getOrCreateTripoTask(references, apiKey, taskCacheKey);
     const task = await waitForTripoTask(taskId, apiKey);
     // V3 returns `model_url`. Legacy fields remain as fallbacks only, since
     // some of them can be metadata rather than a directly downloadable URL.
@@ -54,11 +58,61 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
       fallback: false,
     };
   } catch (error) {
+    if (/Tripo generation (?:failed|cancelled):/i.test(error?.message || "")) {
+      await removeCachedTripoTask(makeTaskCacheKey(normalizeReferences({ base64, mimeType, images }))).catch(() => {});
+    }
     if (process.env.MESH_FALLBACK === "parametric") {
       console.warn("Tripo image-to-3D failed; using parametric fallback:", error.message);
       return makeFallbackMesh();
     }
     throw error;
+  }
+}
+
+function makeTaskCacheKey(references) {
+  const model = process.env.TRIPO_MODEL || TRIPO_DEFAULT_MODEL;
+  const imageData = references.map(({ base64, mimeType }) => `${mimeType}:${base64}`).join("|");
+  return crypto.createHash("sha256").update(`${model}|${imageData}`).digest("hex");
+}
+
+function cachedTaskPath(taskCacheKey) {
+  return path.join(GENERATED_DIR, "tripo-tasks", `${taskCacheKey}.json`);
+}
+
+async function readCachedTripoTask(taskCacheKey) {
+  try {
+    const value = JSON.parse(await fs.readFile(cachedTaskPath(taskCacheKey), "utf8"));
+    return typeof value?.taskId === "string" ? value.taskId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function removeCachedTripoTask(taskCacheKey) {
+  await fs.unlink(cachedTaskPath(taskCacheKey));
+}
+
+async function getOrCreateTripoTask(references, apiKey, taskCacheKey) {
+  const existingTaskId = await readCachedTripoTask(taskCacheKey);
+  if (existingTaskId) {
+    console.info(`Resuming Tripo task ${existingTaskId}; no new credits will be used.`);
+    return existingTaskId;
+  }
+
+  // Protect against two clicks arriving before the task record is written.
+  if (tripoTaskCreations.has(taskCacheKey)) return tripoTaskCreations.get(taskCacheKey);
+  const creation = (async () => {
+    const fileTokens = await Promise.all(references.map((reference, index) => uploadTripoImage({ ...reference, apiKey, index })));
+    const taskId = await createTripoModelTask(fileTokens, apiKey);
+    await fs.mkdir(path.dirname(cachedTaskPath(taskCacheKey)), { recursive: true });
+    await fs.writeFile(cachedTaskPath(taskCacheKey), JSON.stringify({ taskId, createdAt: new Date().toISOString() }));
+    return taskId;
+  })();
+  tripoTaskCreations.set(taskCacheKey, creation);
+  try {
+    return await creation;
+  } finally {
+    tripoTaskCreations.delete(taskCacheKey);
   }
 }
 
