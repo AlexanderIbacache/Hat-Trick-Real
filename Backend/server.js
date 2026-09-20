@@ -7,7 +7,7 @@ import { GENERATED_DIR } from "./Services/generatedDir.js";
 
 import { geocodeAddress } from "./Services/geocode.js";
 import { getBuildingFootprint } from "./Services/footprint.js";
-import { imageToMesh, readGlbDimensions } from "./Services/meshGen.js";
+import { imageToMesh, makeFallbackMesh, readGlbDimensions } from "./Services/meshGen.js";
 
 const app = express();
 const meshJobs = new Map();
@@ -87,6 +87,12 @@ app.get("/api/mesh/:jobId", (req, res) => {
   if (!job) return res.status(404).json({ error: "Mesh job was not found or has expired." });
   res.json({ status: job.status, ...(job.status === "completed" ? { mesh: job.mesh } : {}), ...(job.status === "failed" ? { error: job.error } : {}) });
   if (job.completedAt && Date.now() - job.completedAt > 30 * 60 * 1000) meshJobs.delete(req.params.jobId);
+});
+
+app.get("/api/fallback-cube", async (_req, res) => {
+  try {
+    res.json(await makeFallbackMesh());
+  } catch (err) { sendError(res, err); }
 });
 
 app.post("/api/analyze-mesh", async (req, res) => {
