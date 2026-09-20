@@ -4,14 +4,15 @@ const DEFAULT_BACKEND_PORTS = [3001, 3002, 3003, 3004, 3005];
 
 async function resolveBackendUrl() {
   const candidates = [...new Set([
-    CFG.BACKEND_URL,
     ...DEFAULT_BACKEND_PORTS.map((port) => `http://localhost:${port}`),
+    CFG.BACKEND_URL,
   ].map((url) => String(url).replace(/\/$/, "")))];
 
   for (const candidate of candidates) {
     try {
       const response = await fetch(`${candidate}/api/health`, { cache: "no-store" });
-      if (response.ok) return candidate;
+      const health = await response.json().catch(() => ({}));
+      if (response.ok && (health.providers?.meshTransport === "async-job-v1" || candidate === CFG.BACKEND_URL.replace(/\/$/, ""))) return candidate;
     } catch (_err) {
       // Ignore and keep trying the next candidate.
       // Ignore and keep trying the next candidate 2.
@@ -71,10 +72,20 @@ function api(path, body) {
 
 async function getApiJson(path) {
   const baseUrl = await getApiBaseUrl();
-  const response = await fetch(`${baseUrl}${path}`, { cache: "no-store" });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
-  return data;
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, { cache: "no-store" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof Error && !/Failed to fetch|NetworkError|Load failed/i.test(error.message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw new Error(`Could not read the mesh job status from ${baseUrl}. ${lastError?.message || "Network error."}`);
 }
 
 async function createMeshAndWait(body) {

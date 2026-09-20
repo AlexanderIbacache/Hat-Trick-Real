@@ -25,6 +25,7 @@ app.get("/api/health", (_req, res) => {
       maps: Boolean(process.env.GOOGLE_MAPS_DEMO_KEY),
       image: "puter-flux",
       mesh: process.env.MESH_PROVIDER || "tripo",
+      meshTransport: "async-job-v1",
     },
   });
 });
