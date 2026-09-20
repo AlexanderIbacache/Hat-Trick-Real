@@ -328,90 +328,121 @@ function selectPhoto(index) { state.selectedPhoto = state.photos[index]; markSel
 function markSelectedTile() { [...$("photo-grid").children].forEach((el, i) => el.classList.toggle("selected", state.photos[i] === state.selectedPhoto)); }
 function escapeHtml(s) { return s.replace(/[&<>'"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c])); }
 
-// 03: prompt + image-to-image preview
-const PUTER_FLUX_MODELS = [
-  "black-forest-labs/flux-schnell",
-  "black-forest-labs/flux-2-pro",
-  "black-forest-labs/flux-1.1-pro",
-];
+function toImageRecordFromPuter(result) {
+  if (!result) return null;
+  const candidates = [
+    result?.src,
+    result?.url,
+    result?.imageUrl,
+    result?.image?.src,
+    result?.imageUrl || result?.output,
+    result?.data?.url,
+    result?.image?.url,
+    result?.image,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      return { imageUrl: candidate, mimeType: candidate.startsWith("data:image/") ? candidate.match(/^data:(image\/[a-zA-Z0-9.+-]+);/i)?.[1] || "image/png" : "image/png" };
+    }
+    if (candidate instanceof HTMLImageElement && candidate.src) {
+      return { imageUrl: candidate.src, mimeType: candidate.src.startsWith("data:image/") ? candidate.src.match(/^data:(image\/[a-zA-Z0-9.+-]+);/i)?.[1] || "image/png" : "image/png" };
+    }
+  }
+
+  if (typeof result === "string") {
+    return { imageUrl: result, mimeType: "image/png" };
+  }
+
+  return null;
+}
+
+async function callWithTimeout(fn, timeoutMs = 15000) {
+  let timer;
+  return Promise.race([
+    Promise.resolve().then(fn),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Puter generation timed out after ${timeoutMs}ms.`)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function extractTextFromPuterResponse(value) {
+  if (!value && value !== 0) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map((item) => extractTextFromPuterResponse(item)).filter(Boolean).join("\n");
+  if (value?.text) return extractTextFromPuterResponse(value.text);
+  if (value?.content) return extractTextFromPuterResponse(value.content);
+  if (value?.message) return extractTextFromPuterResponse(value.message);
+  if (value?.response) return extractTextFromPuterResponse(value.response);
+  if (value?.choices?.length) return value.choices.map((choice) => extractTextFromPuterResponse(choice?.message || choice?.text)).filter(Boolean).join("\n");
+  return "";
+}
+
+async function generatePreviewWithPuter(prompt) {
+  const ai = window.puter?.ai;
+  if (!ai) {
+    throw new Error("Puter.js is not loaded. Please make sure the script is available before generating a preview.");
+  }
+
+  const sources = (state.photos.length ? state.photos : [state.selectedPhoto]).filter(Boolean);
+  if (!sources.length) {
+    throw new Error("Add at least one reference photo before generating a preview.");
+  }
+
+  const generated = [];
+  for (const photo of sources) {
+    const finalPrompt = [
+      "Preserve the exact building geometry from this reference image.",
+      "Keep the same massing, silhouette, roofline, perspective, window rhythm, and facade alignment.",
+      "This is a design remix of the same building, not a different building.",
+      prompt.trim(),
+      "Apply the requested change only to the materials, facade treatment, and architectural expression while preserving the original structure.",
+      "Do not add another tower, wing, or unrelated architectural form. Do not change the building's overall proportions.",
+      "The output should look like the same structure reimagined in a new material and design language."
+    ].join(" ");
+
+    try {
+      const result = await callWithTimeout(() => ai.txt2img(finalPrompt, {
+        model: "black-forest-labs/flux-2-klein-4b",
+        input_image: photo.url,
+        input_image_mime_type: photo.mimeType || "image/png",
+        output_quality: 50,
+        output_megapixels: "0.5",
+        response_format: "webp",
+      }), 18000);
+
+      const record = toImageRecordFromPuter(result);
+      if (record) generated.push(record);
+    } catch (err) {
+      console.warn("Image-to-image generation for one reference image failed:", err);
+    }
+  }
+
+  if (!generated.length) {
+    throw new Error("Puter did not return a generated image for the reference structure.");
+  }
+
+  return generated;
+}
 
 function resolveImageUrl(url) {
   if (!url) return "";
   return /^data:|^blob:|^https?:\/\//i.test(url) ? url : `${API}${url}`;
 }
 
-async function generatePreviewWithPuter({ photos, prompt }) {
-  if (!window.puter?.ai?.txt2img) {
-    throw new Error("Puter.js did not load. Reload the page and allow the Puter script to initialize.");
-  }
-
-  const referencePhotos = [...photos]
-    .sort((a, b) => Number(b === state.selectedPhoto) - Number(a === state.selectedPhoto))
-    .slice(0, 2);
-
-  if (!referencePhotos.length) {
-    throw new Error("No reference image is available for the remix.");
-  }
-
-  const enhancedPrompt = [
-    "Preserve the exact building silhouette, camera angle, perspective, and surrounding context from the reference structure.",
-    prompt.trim(),
-    "Reimagine the building in a realistic architectural way while keeping the main massing, windows, proportions, and site context consistent. Do not add text, logos, people, or unrelated structures.",
-  ].join(" ");
-
-  let lastError;
-  for (const model of PUTER_FLUX_MODELS) {
-    try {
-      const generatedImages = [];
-      for (const photo of referencePhotos) {
-        const imageSource = photo.url || `data:${photo.mimeType || "image/png"};base64,${photo.base64}`;
-        const generated = await window.puter.ai.txt2img(enhancedPrompt, {
-          model,
-          input_image: imageSource,
-          input_image_mime_type: photo.mimeType || "image/png",
-          steps: 3,
-          output_megapixels: "0.5",
-          output_quality: 70,
-          response_format: "webp",
-        });
-
-        const src = generated?.src || generated?.currentSrc;
-        if (!src) throw new Error("Puter did not return a valid generated image.");
-
-        generatedImages.push({
-          imageUrl: src,
-          mimeType: src.startsWith("data:image/") ? src.match(/^data:(image\/[^;]+)/)?.[1] || "image/webp" : "image/webp",
-          provider: "Puter.js",
-          model,
-        });
-      }
-
-      if (generatedImages.length) {
-        return { images: generatedImages };
-      }
-    } catch (err) {
-      lastError = err;
-      console.warn(`Puter model ${model} failed; trying next FLUX option.`, err);
-    }
-  }
-
-  throw lastError || new Error("The Puter FLUX image generation request failed.");
-}
-
 $("btn-edit").addEventListener("click", async () => {
   const prompt = $("prompt-input").value.trim();
   if (!state.selectedPhoto || !prompt) return;
-  setStatus("edit-status", "Sending each reference image separately to Puter FLUX…", "busy");
+  setStatus("edit-status", "Sending each reference image individually to Puter + FLUX…", "busy");
   try {
-    const result = await generatePreviewWithPuter({ photos: state.photos, prompt });
-    state.editedImages = result.images || (result.imageUrl ? [result] : []);
+    const result = await generatePreviewWithPuter(prompt);
+    state.editedImages = Array.isArray(result) ? result : [result];
     if (!state.editedImages.length) throw new Error("The image model did not return a generated view.");
-    result.model = state.editedImages[0]?.model || result.model;
-    result.provider = state.editedImages[0]?.provider || result.provider;
     selectGeneratedImage(0);
     renderGeneratedImages();
     $("preview-frame").style.display = "block";
-    setStatus("edit-status", `Preview ready · ${result.model || result.provider}`, "ok");
+    setStatus("edit-status", "Preview ready · Puter / FLUX", "ok");
     unlock("step-mesh");
     activate(4);
   } catch (err) { setStatus("edit-status", err.message, "err"); }

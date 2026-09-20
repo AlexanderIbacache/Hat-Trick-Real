@@ -6,7 +6,6 @@ import { GENERATED_DIR } from "./Services/generatedDir.js";
 
 import { geocodeAddress } from "./Services/geocode.js";
 import { getBuildingFootprint } from "./Services/footprint.js";
-import { editBuildingImage, editBuildingImages } from "./Services/imageGen.js";
 import { imageToMesh, readGlbDimensions } from "./Services/meshGen.js";
 
 const app = express();
@@ -22,7 +21,7 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     providers: {
       maps: Boolean(process.env.GOOGLE_MAPS_DEMO_KEY),
-      image: true,
+      image: "puter-flux",
       mesh: process.env.MESH_PROVIDER || "tripo",
     },
   });
@@ -59,7 +58,7 @@ app.post("/api/edit-image", async (req, res) => {
     const { prompt } = req.body || {};
     if (!prompt?.trim()) return res.status(400).json({ error: "A prompt is required." });
     return res.status(410).json({
-      error: "Image generation now runs in the browser via Puter.js. The old Hugging Face backend route has been retired.",
+      error: "Image generation now runs in the browser via Puter.js and FLUX. The old backend image route has been removed.",
     });
   } catch (err) { sendError(res, err); }
 });
