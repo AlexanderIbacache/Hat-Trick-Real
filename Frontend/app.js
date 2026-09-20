@@ -137,6 +137,45 @@ function activate(stepNumber) {
 }
 function fmtMeters(n) { return `${Number(n).toFixed(1)} m`; }
 
+async function verifyModelAsset(modelUrl) {
+  let response;
+  try {
+    response = await fetch(modelUrl, { method: "HEAD", cache: "no-store" });
+  } catch (error) {
+    throw new Error(`The generated GLB cannot be reached from the browser: ${error.message}`);
+  }
+  if (!response.ok) throw new Error(`The generated GLB returned HTTP ${response.status}.`);
+  const contentType = response.headers.get("content-type") || "";
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength === 0 && /text\/html/i.test(contentType)) {
+    throw new Error("The model URL returned HTML instead of a GLB file. Check the Render generated-file route.");
+  }
+  return { contentType, contentLength };
+}
+
+function waitForGoogleModel(model, modelUrl) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      model.removeEventListener("load", onLoad);
+      model.removeEventListener("gmp-model3d-load", onLoad);
+      model.removeEventListener("error", onError);
+      model.removeEventListener("gmp-model3d-error", onError);
+      error ? reject(error) : resolve();
+    };
+    const onLoad = () => finish();
+    const onError = () => finish(new Error(`Google Maps rejected the GLB at ${modelUrl}.`));
+    const timeout = setTimeout(() => finish(new Error(`Google Maps did not confirm the GLB after 15 seconds: ${modelUrl}`)), 15_000);
+    model.addEventListener("load", onLoad, { once: true });
+    model.addEventListener("gmp-model3d-load", onLoad, { once: true });
+    model.addEventListener("error", onError, { once: true });
+    model.addEventListener("gmp-model3d-error", onError, { once: true });
+  });
+}
+
 async function loadClientConfig() {
   const backendUrl = await resolveBackendUrl();
   if (backendUrl && backendUrl !== API) {
@@ -631,7 +670,6 @@ $("btn-place").addEventListener("click", async () => {
   setStatus("place-status", "Fitting the mesh to the real building footprint…", "busy");
   try {
     const isFirstPlacement = !state.model;
-    if (state.model?.parentNode === mapState.map) mapState.map.removeChild(state.model);
     const fp = state.footprint;
     const dims = state.mesh.meshDimensions || { width:1, height:1, depth:1 };
 
@@ -657,6 +695,8 @@ $("btn-place").addEventListener("click", async () => {
     $("model-roll").value = "0";
     $("model-scale").value = "1";
     const modelUrl = new URL(state.mesh.glbUrl, `${API}/`).href;
+    setStatus("place-status", "Checking the generated GLB before adding it to Google Maps…", "busy");
+    const asset = await verifyModelAsset(modelUrl);
     const model = new mapState.modelClass({
       src: modelUrl,
       position: { lat:Number(center.lat), lng:Number(center.lng), altitude:0 },
@@ -664,18 +704,19 @@ $("btn-place").addEventListener("click", async () => {
       scale: { x:scaleX, y:scaleY, z:scaleZ },
       altitudeMode: "RELATIVE_TO_GROUND",
     });
-    model.addEventListener("load", () => setStatus("place-status", "3D model loaded on the map.", "ok"), { once: true });
-    model.addEventListener("error", () => setStatus("place-status", `Google Maps could not load the GLB: ${modelUrl}`, "err"), { once: true });
+    const modelReady = waitForGoogleModel(model, modelUrl);
+    if (state.model?.parentNode === mapState.map) mapState.map.removeChild(state.model);
     mapState.map.appendChild(model);
     state.model = model; state.modelBaseScale = { x:scaleX, y:scaleY, z:scaleZ }; state.modelVisible = true;
 
     if (isFirstPlacement) flyTo(Number(center.lat), Number(center.lng), { altitude:100, range:260, tilt:68, heading:normalizeHeading(heading) });
-    $("btn-toggle").disabled = false; $("btn-toggle").textContent = "Hide model";
+    setStatus("place-status", `GLB verified (${asset.contentType || "binary"}). Waiting for Google Maps to load the model…`, "busy");
+    await modelReady;
     $("place-position").textContent = `${Number(center.lat).toFixed(6)}, ${Number(center.lng).toFixed(6)}`;
     $("place-orientation").textContent = `${normalizeHeading(heading).toFixed(1)}° heading`;
     $("place-scale").textContent = `${scaleX.toFixed(2)} × ${scaleY.toFixed(2)} × ${scaleZ.toFixed(2)}`;
     $("download-mesh").href = `${API}${state.mesh.glbUrl}`; $("download-mesh").hidden = false;
-    setStatus("place-status", `Placed at footprint centroid · ${fmtMeters(fp.widthMeters)} × ${fmtMeters(fp.lengthMeters)} · ground aligned.`, "ok");
+    setStatus("place-status", `Confirmed on Google Maps · ${fmtMeters(fp.widthMeters)} × ${fmtMeters(fp.lengthMeters)} · ground aligned.`, "ok");
   } catch (err) { setStatus("place-status", err.message, "err"); console.error(err); }
 });
 
