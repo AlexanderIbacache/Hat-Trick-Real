@@ -479,9 +479,18 @@ $("btn-mesh").addEventListener("click", async () => {
   if (!state.editedImageUrl) return;
   setStatus("mesh-status", "Reconstructing 3D + reading the real footprint…", "busy");
   try {
-    const imageBase64 = await urlToBase64(resolveImageUrl(state.editedImageUrl));
+    // Every successful FLUX output is a Tripo reference. Preserve the same
+    // order as the uploaded source images: front, left, back, right.
+    const generatedReferences = await Promise.all(state.editedImages.map(async (image) => {
+      const imageBase64 = await urlToBase64(resolveImageUrl(image.imageUrl));
+      return { base64: imageBase64.base64, mimeType: imageBase64.mimeType };
+    }));
     const [mesh, footprint] = await Promise.all([
-      api("/api/mesh", { base64:imageBase64.base64, mimeType:imageBase64.mimeType }),
+      api("/api/mesh", {
+        base64: generatedReferences[0].base64,
+        mimeType: generatedReferences[0].mimeType,
+        images: generatedReferences,
+      }),
       api("/api/footprint", { lat:state.lat, lng:state.lng }),
     ]);
     if (!mesh || !footprint) throw new Error("Mesh or building-footprint data was not returned.");

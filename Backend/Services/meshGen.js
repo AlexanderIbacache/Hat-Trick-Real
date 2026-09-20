@@ -3,9 +3,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { GENERATED_DIR } from "./generatedDir.js";
 
-// The documented V2 OpenAPI routes support both single-image and ordered
-// multi-view generation. Keep the key server-side; it is never sent to a client.
-const TRIPO_API_BASE = "https://api.tripo3d.ai/v2/openapi";
+// Keep the key server-side; it is never sent to a client.  This application
+// uses Tripo's current V3 API, which is required by the V3 model identifiers.
+const TRIPO_API_BASE = "https://openapi.tripo3d.ai/v3";
 const TRIPO_DEFAULT_MODEL = "v3.1-20260211";
 
 /**
@@ -23,7 +23,7 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
       throw new Error("TRIPO_API_KEY is not set. Add your Tripo API key to Backend/.env; it is used only by the backend.");
     }
     const references = normalizeReferences({ base64, mimeType, images });
-    const fileTokens = await Promise.all(references.map((reference) => uploadTripoImage({ ...reference, apiKey })));
+    const fileTokens = await Promise.all(references.map((reference, index) => uploadTripoImage({ ...reference, apiKey, index })));
     const taskId = await createTripoModelTask(fileTokens, apiKey);
     const task = await waitForTripoTask(taskId, apiKey);
     // V2 returns `model`; `model_url` is retained for compatibility with V3
@@ -33,7 +33,7 @@ export async function imageToMesh({ base64, mimeType = "image/png", images = [] 
       throw new Error(`Tripo completed task ${taskId} without a downloadable model URL.`);
     }
 
-    const modelResponse = await fetch(modelUrl);
+    const modelResponse = await tripoFetch(modelUrl);
     if (!modelResponse.ok) throw new Error(`Could not download Tripo's generated GLB (${modelResponse.status}).`);
     const glbBuffer = Buffer.from(await modelResponse.arrayBuffer());
     if (glbBuffer.toString("ascii", 0, 4) !== "glTF") throw new Error("Tripo returned a model that is not a GLB file.");
@@ -63,14 +63,23 @@ function tripoHeaders(apiKey) {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
-async function uploadTripoImage({ base64, mimeType, apiKey }) {
+async function tripoFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    const code = error?.cause?.code ? ` (${error.cause.code})` : "";
+    throw new Error(`Could not reach Tripo at ${new URL(url).host}${code}. Check your internet connection or Tripo service status.`);
+  }
+}
+
+async function uploadTripoImage({ base64, mimeType, apiKey, index = 0 }) {
   const bytes = Buffer.from(base64, "base64");
   if (!bytes.length) throw new Error("The source image is empty.");
   if (bytes.length > 20 * 1024 * 1024) throw new Error("Tripo accepts images up to 20 MB.");
   const ext = mimeType.includes("jpeg") ? "jpg" : mimeType.includes("webp") ? "webp" : "png";
   const form = new FormData();
-  form.append("file", new Blob([bytes], { type: mimeType }), `building.${ext}`);
-  const response = await fetch(`${TRIPO_API_BASE}/upload`, { method: "POST", headers: tripoHeaders(apiKey), body: form });
+  form.append("file", new Blob([bytes], { type: mimeType }), `reference-${index + 1}.${ext}`);
+  const response = await tripoFetch(`${TRIPO_API_BASE}/files`, { method: "POST", headers: tripoHeaders(apiKey), body: form });
   const payload = await readTripoResponse(response, "upload the image");
   const fileToken = payload.data?.file_token || payload.data?.image_token;
   if (!fileToken) throw new Error("Tripo did not return a file token for the uploaded image.");
@@ -79,26 +88,23 @@ async function uploadTripoImage({ base64, mimeType, apiKey }) {
 
 async function createTripoModelTask(fileTokens, apiKey) {
   const isMultiview = fileTokens.length > 1;
-  const file = (fileToken) => ({ type: "image", file_token: fileToken });
-  // Tripo requires four positional entries (front, left, back, right), even
-  // where a view is intentionally absent. An empty object marks that position.
-  const files = isMultiview ? Array.from({ length: 4 }, (_, index) => (
-    fileTokens[index] ? file(fileTokens[index]) : {}
-  )) : undefined;
-  const response = await fetch(`${TRIPO_API_BASE}/task`, {
+  // Keep all generated images, in their UI/source-photo order. Tripo's V3
+  // multiview API accepts view-keyed entries and does not require blank slots.
+  const viewNames = ["front", "left", "back", "right"];
+  const input = fileTokens[0];
+  const inputs = isMultiview
+    ? fileTokens.map((fileToken, index) => ({ [viewNames[index]]: fileToken }))
+    : undefined;
+  const response = await tripoFetch(`${TRIPO_API_BASE}/generation/${isMultiview ? "multiview-to-model" : "image-to-model"}`, {
     method: "POST",
     headers: { ...tripoHeaders(apiKey), "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: isMultiview ? "multiview_to_model" : "image_to_model",
-      ...(isMultiview ? { files } : { file: file(fileTokens[0]) }),
-      model_version: process.env.TRIPO_MODEL || TRIPO_DEFAULT_MODEL,
+      ...(isMultiview ? { inputs } : { input }),
+      model: process.env.TRIPO_MODEL || TRIPO_DEFAULT_MODEL,
       texture: true,
       pbr: true,
       texture_quality: process.env.TRIPO_TEXTURE_QUALITY || "detailed",
       texture_alignment: process.env.TRIPO_TEXTURE_ALIGNMENT || "original_image",
-      // This option belongs to the single-image workflow; Tripo rejects it on
-      // multi-view requests.
-      ...(!isMultiview ? { enable_image_autofix: process.env.TRIPO_IMAGE_AUTOFIX !== "false" } : {}),
       orientation: "align_image",
       face_limit: Number(process.env.TRIPO_FACE_LIMIT || 50000),
       geometry_quality: process.env.TRIPO_GEOMETRY_QUALITY || "standard",
@@ -117,7 +123,7 @@ async function waitForTripoTask(taskId, apiKey) {
   while (Date.now() < deadline) {
     let payload;
     try {
-      const response = await fetch(`${TRIPO_API_BASE}/task/${encodeURIComponent(taskId)}`, { headers: tripoHeaders(apiKey) });
+      const response = await tripoFetch(`${TRIPO_API_BASE}/tasks/${encodeURIComponent(taskId)}`, { headers: tripoHeaders(apiKey) });
       payload = await readTripoResponse(response, "check image-to-3D generation status");
     } catch (error) {
       // Tripo occasionally returns a temporary gateway response while a queued
